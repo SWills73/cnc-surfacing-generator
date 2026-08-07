@@ -4,7 +4,7 @@ Browser UI to create Workbee/Duet-compatible surfacing G-code.
 
 ## Run
 
-Open `/home/runner/work/cnc-surfacing-generator/cnc-surfacing-generator/index.html` in a browser.
+Open `index.html` in a browser.
 
 ## Features
 

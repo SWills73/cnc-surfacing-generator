@@ -298,9 +298,11 @@ G90</textarea>
       if (!(spindle > 0)) errors.push('Spindle speed must be positive.');
       if (!(clear > 0)) errors.push('Z clearance must be positive.');
       if (!(wcs >= 1 && wcs <= 20)) errors.push('Coordinate system number must be between 1 and 20.');
-      if (!(num('probeOffset') > 0)) errors.push('Z probe depth offset must be positive.');
-      if (!(num('probeClearance') > 0)) errors.push('Z probe clearance move must be positive.');
-      if (!(num('probeSpeed') > 0)) errors.push('Z probe down speed must be positive.');
+      if (probeOn) {
+        if (!(num('probeOffset') > 0)) errors.push('Z probe depth offset must be positive.');
+        if (!(num('probeClearance') > 0)) errors.push('Z probe clearance move must be positive.');
+        if (!(num('probeSpeed') > 0)) errors.push('Z probe down speed must be positive.');
+      }
 
       if (stepPct > 100) warnings.push('Step-over is greater than 100% of bit diameter.');
       if (dpp > 3) warnings.push('Depth per pass is aggressive (>3mm).');
@@ -419,18 +421,18 @@ G90</textarea>
         '; Z Probe sequence (RemoteBee compatible)',
         `G38.2 Z-20 F${rounded(speed, 0)}              ; probe down to touch surface`,
         `G10 L20 Z${rounded(offset, 2)}                ; set Z offset`,
-        `G21 G91 G0 Z${rounded(clear, 2)} G90            ; clearance move up, return absolute`
+        'G21                         ; ensure mm units',
+        'G91                         ; relative mode',
+        `G0 Z${rounded(clear, 2)}                     ; clearance move up`,
+        'G90                         ; return to absolute'
       ];
       if (el('includeM500').checked) lines.push('M500                         ; persist work zero across power cycles');
       return lines;
     }
 
-    function preLines(mode) {
+    function preLines() {
       const out = [];
       if (el('includeHoming').checked) out.push('G28 ; home axes');
-      if (mode === 'direct' && el('includeReturn').checked === false) {
-        // nothing
-      }
       if (sharedHeader().pre) out.push(...sharedHeader().pre.split('\n'));
       return out;
     }
@@ -444,9 +446,10 @@ G90</textarea>
 
     function buildSurfacingCoreForDirect(cfg, geo) {
       const lines = [];
+      const totalDepth = num('totalDepth');
       lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
       for (let p = 1; p <= cfg.passes; p++) {
-        const z = -Math.min(cfg.dpp * p, (Number.isFinite(num('totalDepth')) && num('totalDepth') > 0) ? num('totalDepth') : cfg.dpp * p);
+        const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
         lines.push(`; Pass ${p}/${cfg.passes}`);
         lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
         let y = geo.minY;
@@ -464,7 +467,7 @@ G90</textarea>
       return lines;
     }
 
-    function buildSurfacingCoreForInteractive(cfg) {
+    function buildInteractiveCaptureAndBounds() {
       const lines = [];
       lines.push('M291 P"Move to starting XY position for surfacing and press OK" R"Surfacing Setup" S3');
       lines.push('var startX = move.axes[0].machinePosition');
@@ -474,15 +477,22 @@ G90</textarea>
       lines.push('var endY = move.axes[1].machinePosition');
       lines.push('if var.startX = var.endX && var.startY = var.endY');
       lines.push('  abort "Start and end positions cannot be identical."');
+      lines.push('endif');
       lines.push('var minX = min(var.startX, var.endX)');
       lines.push('var maxX = max(var.startX, var.endX)');
       lines.push('var minY = min(var.startY, var.endY)');
       lines.push('var maxY = max(var.startY, var.endY)');
-      lines.push(...probeLines());
+      return lines;
+    }
+
+    function buildInteractiveSurfacingCore(cfg) {
+      const lines = [];
       lines.push('G0 X{var.minX} Y{var.minY}');
+      const totalDepth = num('totalDepth');
       for (let p = 1; p <= cfg.passes; p++) {
+        const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
         lines.push(`; Pass ${p}/${cfg.passes}`);
-        lines.push(`G1 Z-${rounded(cfg.dpp * p,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
+        lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
         lines.push('var yPos = var.minY');
         lines.push('var dir = 1');
         lines.push('while var.yPos <= var.maxY');
@@ -490,10 +500,17 @@ G90</textarea>
         lines.push(`    G1 X{var.maxX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
         lines.push('  else');
         lines.push(`    G1 X{var.minX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('  endif');
         lines.push(`  set var.yPos = var.yPos + ${rounded(cfg.stepMm,3)}`);
         lines.push('  if var.yPos <= var.maxY');
         lines.push(`    G1 Y{var.yPos} F${rounded(cfg.feed,0)}`);
-        lines.push('  set var.dir = 1 - var.dir');
+        lines.push('  endif');
+        lines.push('  if var.dir = 1');
+        lines.push('    set var.dir = 0');
+        lines.push('  else');
+        lines.push('    set var.dir = 1');
+        lines.push('  endif');
+        lines.push('endwhile');
         lines.push(`G0 Z${rounded(cfg.clear,3)}`);
         lines.push('G0 X{var.minX} Y{var.minY}');
       }
@@ -552,13 +569,19 @@ G90</textarea>
       lines.push(`; Coordinate system number: ${cfg.wcs}`);
       if (mode === 'direct' && geo) lines.push(`; Area: ${rounded(geo.w,2)} x ${rounded(geo.h,2)} mm`);
       lines.push('');
-      lines.push(...preLines(mode));
-      lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
-      if (mode === 'direct') lines.push(...probeLines());
-      lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
-
-      if (mode === 'interactive') lines.push(...buildSurfacingCoreForInteractive(cfg));
-      else lines.push(...buildSurfacingCoreForDirect(cfg, geo));
+      lines.push(...preLines());
+      if (mode === 'interactive') {
+        lines.push(...buildInteractiveCaptureAndBounds());
+        lines.push(...probeLines());
+        lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
+        lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
+        lines.push(...buildInteractiveSurfacingCore(cfg));
+      } else {
+        lines.push(...probeLines());
+        lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
+        lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
+        lines.push(...buildSurfacingCoreForDirect(cfg, geo));
+      }
 
       lines.push(...postLines(mode, cfg.clear));
 
@@ -595,7 +618,7 @@ G90</textarea>
       a.href = URL.createObjectURL(blob);
       a.download = file;
       a.click();
-      URL.revokeObjectURL(a.href);
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
 
     function refreshDerived() {
