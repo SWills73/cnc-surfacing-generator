@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNC Surfacing G-Code Generator</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --panel2:#1f2937; --text:#e5e7eb; --muted:#9ca3af; --ok:#10b981; --warn:#f59e0b; --err:#ef4444; --accent:#38bdf8; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:Arial, Helvetica, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:1rem; border-bottom:1px solid #334155; background:#020617; position:sticky; top:0; z-index:2; }
+    h1 { margin:.1rem 0 .5rem; font-size:1.2rem; }
+    .indicators { display:flex; gap:1rem; flex-wrap:wrap; font-size:.9rem; color:var(--muted); }
+    .container { display:grid; grid-template-columns:35% 65%; min-height:calc(100vh - 88px); }
+    .left, .right { padding:1rem; }
+    .left { border-right:1px solid #334155; background:var(--panel); overflow:auto; }
+    .right { background:var(--panel2); overflow:auto; }
+    fieldset { border:1px solid #334155; margin:0 0 1rem; padding:.8rem; }
+    legend { color:var(--accent); padding:0 .4rem; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:.7rem; margin-bottom:.7rem; }
+    .full { grid-column:1/-1; }
+    label { display:block; font-size:.85rem; margin-bottom:.2rem; color:#cbd5e1; }
+    input, select, textarea, button { width:100%; background:#0b1220; color:var(--text); border:1px solid #475569; border-radius:6px; padding:.45rem; }
+    input[readonly] { background:#111827; color:var(--muted); }
+    textarea { min-height:90px; font-family:Consolas, monospace; }
+    .inline { display:flex; align-items:center; gap:.45rem; }
+    .inline input[type="checkbox"], .inline input[type="radio"] { width:auto; }
+    .btns { display:flex; gap:.5rem; flex-wrap:wrap; }
+    button { cursor:pointer; background:#0b3b53; }
+    button:hover { background:#145c81; }
+    .status { font-size:.85rem; color:var(--muted); }
+    .ok { color:var(--ok); }
+    .warn { color:var(--warn); }
+    .err { color:var(--err); }
+    .hidden { display:none; }
+    .pill { border:1px solid #334155; border-radius:999px; padding:.2rem .6rem; }
+    #gcodeOutput { min-height:300px; }
+    .warnbox { border:1px solid #7c2d12; background:#431407; padding:.6rem; border-radius:6px; margin-bottom:.8rem; }
+    #previewSvg { width:100%; min-height:230px; background:#0b1220; border:1px solid #334155; border-radius:8px; }
+    details summary { cursor:pointer; color:var(--accent); }
+    .footerbar { margin-top:.8rem; display:flex; gap:1rem; flex-wrap:wrap; font-size:.9rem; color:var(--muted); }
+    @media (max-width: 980px) { .container { grid-template-columns:1fr; } .left { border-right:none; border-bottom:1px solid #334155; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CNC Surfacing G-Code Generator (Duet / Workbee)</h1>
+    <div class="indicators" aria-live="polite">
+      <span class="pill" id="modeIndicator">Mode: Interactive Setup</span>
+      <span class="pill" id="probeIndicator">Z-Probe: ON</span>
+      <span class="pill">Tooltips: Hover form labels for guidance</span>
+    </div>
+  </header>
+
+  <div class="container">
+    <section class="left" aria-label="Input panel">
+      <fieldset>
+        <legend>Mode Selector</legend>
+        <div class="inline">
+          <input type="radio" name="mode" id="modeInteractive" value="interactive" checked>
+          <label for="modeInteractive" title="Generate a macro with M291 prompts and runtime corner capture">Interactive Setup (Jog to Corners)</label>
+        </div>
+        <div class="inline">
+          <input type="radio" name="mode" id="modeDirect" value="direct">
+          <label for="modeDirect" title="Generate ready-to-run file with numeric XY entry">Direct Entry (Numeric)</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Probe</legend>
+        <div class="inline">
+          <input type="checkbox" id="useProbe" checked>
+          <label for="useProbe">Use Z-Probe?</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Shared Parameters</legend>
+        <div class="row">
+          <div>
+            <label for="bitDiameter" title="Surfacing bit diameter in mm">Bit diameter (mm)</label>
+            <input type="number" id="bitDiameter" min="1" step="0.1" value="10">
+          </div>
+          <div>
+            <label for="stepOverPercent" title="Stepover percent of bit diameter">Step-over (%)</label>
+            <input type="number" id="stepOverPercent" min="1" max="200" step="1" value="50">
+          </div>
+          <div>
+            <label for="depthPerPass" title="Depth removed each pass">Depth/pass (mm)</label>
+            <input type="number" id="depthPerPass" min="0.1" max="5" step="0.1" value="1">
+          </div>
+          <div>
+            <label for="totalDepth" title="Optional total depth. Used to calculate suggested passes">Total depth (mm, optional)</label>
+            <input type="number" id="totalDepth" min="0" step="0.1" value="">
+          </div>
+          <div>
+            <label for="passes">Number of passes</label>
+            <input type="number" id="passes" min="1" step="1" value="1">
+          </div>
+          <div class="inline" style="padding-top:1.2rem;">
+            <input type="checkbox" id="autoPasses" checked>
+            <label for="autoPasses">Auto-calc passes from total depth</label>
+          </div>
+          <div>
+            <label for="feedRate">Feed rate (mm/min)</label>
+            <input type="number" id="feedRate" min="1" step="1" value="8000">
+          </div>
+          <div>
+            <label for="spindleRpm">Spindle speed (RPM)</label>
+            <input type="number" id="spindleRpm" min="1" step="1" value="20000">
+          </div>
+          <div>
+            <label for="zClearance">Z clearance height (mm)</label>
+            <input type="number" id="zClearance" min="1" step="0.1" value="10">
+          </div>
+          <div>
+            <label for="wcs">Coordinate system number (1-20)</label>
+            <input type="number" id="wcs" min="1" max="20" step="1" value="20">
+          </div>
+        </div>
+        <div class="status" id="sharedDerived">Step-over: 5.00mm</div>
+        <div class="btns" style="margin-top:.6rem;">
+          <button type="button" class="presetFeed" data-feed="6000">Steel feed</button>
+          <button type="button" class="presetFeed" data-feed="8000">Aluminum feed</button>
+          <button type="button" class="presetFeed" data-feed="10000">Wood feed</button>
+        </div>
+      </fieldset>
+
+      <fieldset id="interactiveSection">
+        <legend>Mode 1: Interactive Setup</legend>
+        <div class="row">
+          <div>
+            <label for="startXDisplay">Current Start X</label>
+            <input id="startXDisplay" readonly value="Captured at runtime">
+          </div>
+          <div>
+            <label for="startYDisplay">Current Start Y</label>
+            <input id="startYDisplay" readonly value="Captured at runtime">
+          </div>
+          <div>
+            <label for="endXDisplay">Current End X</label>
+            <input id="endXDisplay" readonly value="Captured at runtime">
+          </div>
+          <div>
+            <label for="endYDisplay">Current End Y</label>
+            <input id="endYDisplay" readonly value="Captured at runtime">
+          </div>
+        </div>
+        <div class="status">Status: <span id="interactiveStatus">Awaiting Start Position → Awaiting End Position → Positions Captured</span></div>
+      </fieldset>
+
+      <fieldset id="directSection" class="hidden">
+        <legend>Mode 2: Direct Entry</legend>
+        <div class="row">
+          <div><label for="startX">Start X (mm)</label><input type="number" id="startX" step="0.001"></div>
+          <div><label for="startY">Start Y (mm)</label><input type="number" id="startY" step="0.001"></div>
+          <div><label for="endX">End X (mm)</label><input type="number" id="endX" step="0.001"></div>
+          <div><label for="endY">End Y (mm)</label><input type="number" id="endY" step="0.001"></div>
+        </div>
+        <div class="status" id="boundsDisplay">Work area: enter positions</div>
+      </fieldset>
+
+      <fieldset id="probeSection">
+        <legend>Z-Probe Settings</legend>
+        <div class="row">
+          <div><label for="probeOffset">Z probe depth offset (mm)</label><input type="number" id="probeOffset" step="0.01" value="5.00"></div>
+          <div><label for="probeClearance">Z probe clearance move (mm)</label><input type="number" id="probeClearance" step="0.01" value="3.00"></div>
+          <div><label for="probeSpeed">Z probe down speed (mm/min)</label><input type="number" id="probeSpeed" step="1" value="100"></div>
+          <div class="inline" style="padding-top:1.2rem;"><input type="checkbox" id="includeM500" checked><label for="includeM500">Include M500 (Persist)</label></div>
+        </div>
+      </fieldset>
+
+      <details>
+        <summary>Advanced</summary>
+        <fieldset>
+          <legend>Pre/Post Processing</legend>
+          <div class="inline" id="includeHomingWrap"><input type="checkbox" id="includeHoming" checked><label for="includeHoming">Include homing (G28)</label></div>
+          <div class="inline" id="includeReturnWrap" style="margin:.4rem 0;"><input type="checkbox" id="includeReturn" checked><label for="includeReturn">Include return to origin (G0 X0 Y0)</label></div>
+          <div class="row">
+            <div>
+              <label for="preCommands">Pre-processing commands</label>
+              <textarea id="preCommands">; Set units and absolute mode
+G21
+G90
+; Select coordinate system
+G54</textarea>
+            </div>
+            <div>
+              <label for="postCommands">Post-processing commands</label>
+              <textarea id="postCommands">; Ensure absolute mode
+G90</textarea>
+            </div>
+          </div>
+        </fieldset>
+      </details>
+    </section>
+
+    <section class="right" aria-label="Preview and output panel">
+      <div id="warnings"></div>
+      <h2 style="margin-top:0;">Preview</h2>
+      <svg id="previewSvg" viewBox="0 0 640 320" role="img" aria-label="Work area preview"></svg>
+      <div class="status" id="strategyText">Strategy: zig-zag raster with 50% stepover.</div>
+      <h3>Operations</h3>
+      <ol id="operationsList"></ol>
+      <h3>Generated G-code</h3>
+      <textarea id="gcodeOutput" readonly aria-label="Generated gcode"></textarea>
+      <div class="footerbar">
+        <span id="timeEstimate">Estimated machining time: --</span>
+        <span id="sizeEstimate">File size: --</span>
+      </div>
+      <div class="btns" style="margin-top:.8rem;">
+        <button type="button" id="generateBtn">Generate G-code</button>
+        <button type="button" id="copyBtn">Copy to clipboard</button>
+        <button type="button" id="downloadBtn">Export .g file</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+    const modeInputs = document.querySelectorAll('input[name="mode"]');
+    const defaults = { probeOffset: 5.00, probeClearance: 3.00, probeSpeed: 100 };
+
+    function num(id) {
+      const v = parseFloat(el(id).value);
+      return Number.isFinite(v) ? v : NaN;
+    }
+
+    function currentMode() {
+      return document.querySelector('input[name="mode"]:checked').value;
+    }
+
+    function rounded(v, d = 3) { return Number.parseFloat(v).toFixed(d); }
+
+    function updateModeUi() {
+      const mode = currentMode();
+      const interactive = mode === 'interactive';
+      el('interactiveSection').classList.toggle('hidden', !interactive);
+      el('directSection').classList.toggle('hidden', interactive);
+      el('includeReturnWrap').style.display = interactive ? 'none' : 'flex';
+      el('includeHoming').checked = interactive;
+      el('modeIndicator').textContent = `Mode: ${interactive ? 'Interactive Setup' : 'Direct Entry'}`;
+      if (!interactive && !el('includeReturn').checked) el('includeReturn').checked = true;
+      refreshDerived();
+    }
+
+    function updateProbeUi() {
+      const on = el('useProbe').checked;
+      el('probeSection').classList.toggle('hidden', !on);
+      el('probeIndicator').textContent = `Z-Probe: ${on ? 'ON' : 'OFF'}`;
+      refreshDerived();
+    }
+
+    function updatePasses() {
+      const totalDepth = num('totalDepth');
+      const dpp = num('depthPerPass');
+      if (el('autoPasses').checked && Number.isFinite(totalDepth) && totalDepth > 0 && Number.isFinite(dpp) && dpp > 0) {
+        el('passes').value = Math.max(1, Math.ceil(totalDepth / dpp));
+      }
+    }
+
+    function calcGeometry() {
+      const mode = currentMode();
+      let sx = NaN, sy = NaN, ex = NaN, ey = NaN;
+      if (mode === 'direct') {
+        sx = num('startX'); sy = num('startY'); ex = num('endX'); ey = num('endY');
+      }
+      if (![sx, sy, ex, ey].every(Number.isFinite)) return null;
+      return {
+        sx, sy, ex, ey,
+        minX: Math.min(sx, ex),
+        maxX: Math.max(sx, ex),
+        minY: Math.min(sy, ey),
+        maxY: Math.max(sy, ey),
+        w: Math.abs(ex - sx),
+        h: Math.abs(ey - sy)
+      };
+    }
+
+    function warningsAndErrors() {
+      const warnings = [];
+      const errors = [];
+      const bit = num('bitDiameter');
+      const stepPct = num('stepOverPercent');
+      const dpp = num('depthPerPass');
+      const passes = num('passes');
+      const feed = num('feedRate');
+      const spindle = num('spindleRpm');
+      const clear = num('zClearance');
+      const wcs = num('wcs');
+      const probeOn = el('useProbe').checked;
+
+      if (!(bit > 0)) errors.push('Bit diameter must be positive.');
+      if (!(stepPct > 0)) errors.push('Step-over must be positive.');
+      if (!(dpp >= 0.1 && dpp <= 5)) errors.push('Depth per pass must be within 0.1 to 5mm.');
+      if (!(passes >= 1)) errors.push('Number of passes must be at least 1.');
+      if (!(feed > 0)) errors.push('Feed rate must be positive.');
+      if (!(spindle > 0)) errors.push('Spindle speed must be positive.');
+      if (!(clear > 0)) errors.push('Z clearance must be positive.');
+      if (!(wcs >= 1 && wcs <= 20)) errors.push('Coordinate system number must be between 1 and 20.');
+      if (!(num('probeOffset') > 0)) errors.push('Z probe depth offset must be positive.');
+      if (!(num('probeClearance') > 0)) errors.push('Z probe clearance move must be positive.');
+      if (!(num('probeSpeed') > 0)) errors.push('Z probe down speed must be positive.');
+
+      if (stepPct > 100) warnings.push('Step-over is greater than 100% of bit diameter.');
+      if (dpp > 3) warnings.push('Depth per pass is aggressive (>3mm).');
+
+      if (!probeOn) {
+        const unusualProbe = num('probeOffset') !== defaults.probeOffset || num('probeClearance') !== defaults.probeClearance || num('probeSpeed') !== defaults.probeSpeed || !el('includeM500').checked;
+        if (unusualProbe) warnings.push('Z-probe is disabled, but probe settings were modified (inconsistent state).');
+      }
+
+      if (currentMode() === 'direct') {
+        const g = calcGeometry();
+        if (!g) {
+          errors.push('Mode 2 requires Start/End X/Y values.');
+        } else {
+          if ([g.sx, g.sy, g.ex, g.ey].some(v => v < 0)) errors.push('Mode 2 positions must be non-negative.');
+          if (g.w === 0 && g.h === 0) errors.push('Start and End positions must be different.');
+          if (g.w > 500 || g.h > 500) warnings.push('Work area exceeds 500mm in one or more directions.');
+        }
+      }
+
+      return { warnings, errors };
+    }
+
+    function formatWarnings() {
+      const { warnings, errors } = warningsAndErrors();
+      const box = el('warnings');
+      if (!warnings.length && !errors.length) { box.innerHTML = ''; return; }
+      const items = [
+        ...errors.map(e => `<li class="err">${e}</li>`),
+        ...warnings.map(w => `<li class="warn">${w}</li>`)
+      ].join('');
+      box.innerHTML = `<div class="warnbox"><strong>Validation</strong><ul>${items}</ul></div>`;
+    }
+
+    function estimateTimeAndSize(g) {
+      const text = g || '';
+      el('sizeEstimate').textContent = `File size: ${(new Blob([text]).size / 1024).toFixed(1)} KB`;
+
+      const feed = num('feedRate');
+      const passes = num('passes');
+      let minutes = 0;
+      if (currentMode() === 'direct') {
+        const geo = calcGeometry();
+        if (geo && feed > 0) {
+          const stepMm = num('bitDiameter') * num('stepOverPercent') / 100;
+          const rows = Math.max(1, Math.floor(geo.h / Math.max(stepMm, 0.001)) + 1);
+          const travel = (geo.w * rows) + (geo.h);
+          minutes = (travel * Math.max(1, passes)) / feed;
+        }
+      } else {
+        minutes = Math.max(1, passes) * 0.5;
+      }
+      el('timeEstimate').textContent = `Estimated machining time: ${minutes > 0 ? minutes.toFixed(1) + ' min' : '--'}`;
+    }
+
+    function updateBounds() {
+      const g = calcGeometry();
+      if (!g) {
+        el('boundsDisplay').textContent = 'Work area: enter positions';
+      } else {
+        el('boundsDisplay').textContent = `Work area: ${rounded(g.w, 2)} x ${rounded(g.h, 2)} mm (X:${rounded(g.minX, 2)}→${rounded(g.maxX, 2)}, Y:${rounded(g.minY, 2)}→${rounded(g.maxY, 2)})`;
+      }
+    }
+
+    function updatePreview() {
+      const svg = el('previewSvg');
+      const mode = currentMode();
+      const stepMm = num('bitDiameter') * num('stepOverPercent') / 100;
+      let w = 100, h = 60;
+      if (mode === 'direct') {
+        const g = calcGeometry();
+        if (g) { w = Math.max(g.w, 1); h = Math.max(g.h, 1); }
+      }
+      const maxW = 520, maxH = 230;
+      const scale = Math.min(maxW / w, maxH / h);
+      const rw = w * scale, rh = h * scale;
+      const x = 60, y = 40;
+      let lines = '';
+      const s = Math.max(1, stepMm * scale);
+      for (let yy = y; yy <= y + rh; yy += s) {
+        lines += `<line x1="${x}" y1="${yy}" x2="${x + rw}" y2="${yy}" stroke="#38bdf8" stroke-width="1" />`;
+      }
+      svg.innerHTML = `
+        <rect x="${x}" y="${y}" width="${rw}" height="${rh}" fill="#111827" stroke="#94a3b8" stroke-width="2" />
+        ${lines}
+        <text x="${x}" y="${y - 10}" fill="#cbd5e1" font-size="12">Surfacing Area</text>
+        <text x="${x + rw + 6}" y="${y + rh/2}" fill="#cbd5e1" font-size="12">${rounded(h,1)}mm</text>
+        <text x="${x + rw/2 - 24}" y="${y + rh + 18}" fill="#cbd5e1" font-size="12">${rounded(w,1)}mm</text>
+      `;
+      el('strategyText').textContent = `Strategy: zig-zag raster with ${rounded(stepMm, 2)}mm stepover.`;
+    }
+
+    function sharedHeader() {
+      const bit = num('bitDiameter');
+      const stepPct = num('stepOverPercent');
+      const stepMm = bit * stepPct / 100;
+      const dpp = num('depthPerPass');
+      const passes = Math.max(1, parseInt(el('passes').value || '1', 10));
+      const feed = num('feedRate');
+      const spindle = num('spindleRpm');
+      const clear = num('zClearance');
+      const wcs = parseInt(el('wcs').value || '20', 10);
+      return {
+        bit, stepPct, stepMm, dpp, passes, feed, spindle, clear, wcs,
+        pre: el('preCommands').value.trim(),
+        post: el('postCommands').value.trim()
+      };
+    }
+
+    function probeLines() {
+      if (!el('useProbe').checked) return [];
+      const offset = num('probeOffset');
+      const clear = num('probeClearance');
+      const speed = num('probeSpeed');
+      const lines = [
+        '; Z Probe sequence (RemoteBee compatible)',
+        `G38.2 Z-20 F${rounded(speed, 0)}              ; probe down to touch surface`,
+        `G10 L20 Z${rounded(offset, 2)}                ; set Z offset`,
+        `G21 G91 G0 Z${rounded(clear, 2)} G90            ; clearance move up, return absolute`
+      ];
+      if (el('includeM500').checked) lines.push('M500                         ; persist work zero across power cycles');
+      return lines;
+    }
+
+    function preLines(mode) {
+      const out = [];
+      if (el('includeHoming').checked) out.push('G28 ; home axes');
+      if (mode === 'direct' && el('includeReturn').checked === false) {
+        // nothing
+      }
+      if (sharedHeader().pre) out.push(...sharedHeader().pre.split('\n'));
+      return out;
+    }
+
+    function postLines(mode, clear) {
+      const out = ['M5 ; spindle off', `G0 Z${rounded(clear,2)} ; safe clearance`];
+      if (mode === 'direct' && el('includeReturn').checked) out.push('G0 X0 Y0 ; return to origin');
+      if (sharedHeader().post) out.push(...sharedHeader().post.split('\n'));
+      return out;
+    }
+
+    function buildSurfacingCoreForDirect(cfg, geo) {
+      const lines = [];
+      lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
+      for (let p = 1; p <= cfg.passes; p++) {
+        const z = -Math.min(cfg.dpp * p, (Number.isFinite(num('totalDepth')) && num('totalDepth') > 0) ? num('totalDepth') : cfg.dpp * p);
+        lines.push(`; Pass ${p}/${cfg.passes}`);
+        lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
+        let y = geo.minY;
+        let forward = true;
+        while (y <= geo.maxY + 1e-9) {
+          const tx = forward ? geo.maxX : geo.minX;
+          lines.push(`G1 X${rounded(tx,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+          y += cfg.stepMm;
+          if (y <= geo.maxY + 1e-9) lines.push(`G1 Y${rounded(Math.min(y, geo.maxY),3)} F${rounded(cfg.feed,0)}`);
+          forward = !forward;
+        }
+        lines.push(`G0 Z${rounded(cfg.clear,3)}`);
+        lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
+      }
+      return lines;
+    }
+
+    function buildSurfacingCoreForInteractive(cfg) {
+      const lines = [];
+      lines.push('M291 P"Move to starting XY position for surfacing and press OK" R"Surfacing Setup" S3');
+      lines.push('var startX = move.axes[0].machinePosition');
+      lines.push('var startY = move.axes[1].machinePosition');
+      lines.push('M291 P"Move to ending XY position for surfacing and press OK" R"Surfacing Setup" S3');
+      lines.push('var endX = move.axes[0].machinePosition');
+      lines.push('var endY = move.axes[1].machinePosition');
+      lines.push('if var.startX = var.endX && var.startY = var.endY');
+      lines.push('  abort "Start and end positions cannot be identical."');
+      lines.push('var minX = min(var.startX, var.endX)');
+      lines.push('var maxX = max(var.startX, var.endX)');
+      lines.push('var minY = min(var.startY, var.endY)');
+      lines.push('var maxY = max(var.startY, var.endY)');
+      lines.push(...probeLines());
+      lines.push('G0 X{var.minX} Y{var.minY}');
+      for (let p = 1; p <= cfg.passes; p++) {
+        lines.push(`; Pass ${p}/${cfg.passes}`);
+        lines.push(`G1 Z-${rounded(cfg.dpp * p,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
+        lines.push('var yPos = var.minY');
+        lines.push('var dir = 1');
+        lines.push('while var.yPos <= var.maxY');
+        lines.push('  if var.dir = 1');
+        lines.push(`    G1 X{var.maxX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('  else');
+        lines.push(`    G1 X{var.minX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push(`  set var.yPos = var.yPos + ${rounded(cfg.stepMm,3)}`);
+        lines.push('  if var.yPos <= var.maxY');
+        lines.push(`    G1 Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('  set var.dir = 1 - var.dir');
+        lines.push(`G0 Z${rounded(cfg.clear,3)}`);
+        lines.push('G0 X{var.minX} Y{var.minY}');
+      }
+      return lines;
+    }
+
+    function validateGcode(text) {
+      if (!text.trim()) return { ok: false, message: 'No G-code generated.' };
+      if (text.includes('undefined') || text.includes('NaN')) return { ok: false, message: 'G-code contains invalid values.' };
+      const opens = (text.match(/\{/g) || []).length;
+      const closes = (text.match(/\}/g) || []).length;
+      if (opens !== closes) return { ok: false, message: 'G-code contains unbalanced expression braces.' };
+      return { ok: true, message: 'Syntax check passed.' };
+    }
+
+    function filenameSuggestion(mode, geo) {
+      if (mode === 'interactive') return 'surfacing_Mode1_interactive.g';
+      const probeTag = el('useProbe').checked ? `Z${rounded(num('probeOffset'), 1)}` : 'NoProbe';
+      if (!geo) return `surfacing_direct_${probeTag}.g`;
+      return `surfacing_${rounded(geo.w,0)}x${rounded(geo.h,0)}mm_${probeTag}.g`;
+    }
+
+    function updateOperations(mode) {
+      const ops = [];
+      ops.push('Pre-processing');
+      if (mode === 'interactive') ops.push('Capture corners via M291 prompts');
+      else ops.push('Direct numeric work area');
+      if (el('useProbe').checked) ops.push('Probing (RemoteBee)');
+      else ops.push('Probing skipped (Z0 assumed set)');
+      ops.push('Surfacing passes (zig-zag raster)');
+      ops.push('Post-processing');
+      el('operationsList').innerHTML = ops.map(v => `<li>${v}</li>`).join('');
+    }
+
+    function generate() {
+      updatePasses();
+      formatWarnings();
+      const { errors } = warningsAndErrors();
+      if (errors.length) {
+        el('gcodeOutput').value = '; Cannot generate until validation errors are resolved.';
+        estimateTimeAndSize('');
+        return;
+      }
+
+      const mode = currentMode();
+      const cfg = sharedHeader();
+      const geo = calcGeometry();
+      const lines = [];
+
+      lines.push('; CNC Surfacing G-Code Generator');
+      lines.push(`; Mode: ${mode === 'interactive' ? 'Interactive Setup (Mode 1)' : 'Direct Entry (Mode 2)'}`);
+      lines.push(`; Probe enabled: ${el('useProbe').checked ? 'Yes' : 'No'}`);
+      lines.push(`; Bit: ${rounded(cfg.bit,2)}mm | Stepover: ${rounded(cfg.stepPct,2)}% (${rounded(cfg.stepMm,2)}mm)`);
+      lines.push(`; Depth/pass: ${rounded(cfg.dpp,2)}mm | Passes: ${cfg.passes}`);
+      lines.push(`; Feed: ${rounded(cfg.feed,0)}mm/min | Spindle: ${rounded(cfg.spindle,0)}RPM`);
+      lines.push(`; Coordinate system number: ${cfg.wcs}`);
+      if (mode === 'direct' && geo) lines.push(`; Area: ${rounded(geo.w,2)} x ${rounded(geo.h,2)} mm`);
+      lines.push('');
+      lines.push(...preLines(mode));
+      lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
+      if (mode === 'direct') lines.push(...probeLines());
+      lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
+
+      if (mode === 'interactive') lines.push(...buildSurfacingCoreForInteractive(cfg));
+      else lines.push(...buildSurfacingCoreForDirect(cfg, geo));
+
+      lines.push(...postLines(mode, cfg.clear));
+
+      const gcode = lines.join('\n');
+      const syntax = validateGcode(gcode);
+      if (!syntax.ok) {
+        el('gcodeOutput').value = `; ${syntax.message}`;
+        estimateTimeAndSize('');
+        return;
+      }
+      el('gcodeOutput').value = gcode;
+      estimateTimeAndSize(gcode);
+      updateOperations(mode);
+    }
+
+    function copyCode() {
+      const text = el('gcodeOutput').value;
+      if (!text.trim()) return;
+      navigator.clipboard.writeText(text).then(() => {
+        el('timeEstimate').textContent = el('timeEstimate').textContent + ' | Copied.';
+      }).catch(() => {
+        alert('Clipboard copy failed.');
+      });
+    }
+
+    function downloadCode() {
+      const text = el('gcodeOutput').value;
+      if (!text.trim()) return;
+      const mode = currentMode();
+      const geo = calcGeometry();
+      const file = filenameSuggestion(mode, geo);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = file;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function refreshDerived() {
+      updatePasses();
+      const stepMm = num('bitDiameter') * num('stepOverPercent') / 100;
+      const totalDepth = num('totalDepth');
+      const dpp = num('depthPerPass');
+      const suggested = Number.isFinite(totalDepth) && totalDepth > 0 && dpp > 0 ? Math.ceil(totalDepth / dpp) : 'n/a';
+      el('sharedDerived').textContent = `Step-over: ${rounded(stepMm,2)}mm | Suggested passes: ${suggested}`;
+      updateBounds();
+      updatePreview();
+      formatWarnings();
+      updateOperations(currentMode());
+      estimateTimeAndSize(el('gcodeOutput').value || '');
+    }
+
+    modeInputs.forEach(i => i.addEventListener('change', updateModeUi));
+    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeOffset','probeClearance','probeSpeed','includeM500','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
+      const node = el(id);
+      if (!node) return;
+      node.addEventListener('input', refreshDerived);
+      node.addEventListener('change', refreshDerived);
+    });
+    document.querySelectorAll('.presetFeed').forEach(b => b.addEventListener('click', () => { el('feedRate').value = b.dataset.feed; refreshDerived(); }));
+    el('useProbe').addEventListener('change', updateProbeUi);
+    el('generateBtn').addEventListener('click', generate);
+    el('copyBtn').addEventListener('click', copyCode);
+    el('downloadBtn').addEventListener('click', downloadCode);
+
+    updateModeUi();
+    updateProbeUi();
+    refreshDerived();
+    generate();
+  </script>
+</body>
+</html>
