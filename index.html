@@ -172,7 +172,6 @@
         <summary>Advanced</summary>
         <fieldset>
           <legend>Pre/Post Processing</legend>
-          <div class="inline" id="includeHomingWrap"><input type="checkbox" id="includeHoming" checked><label for="includeHoming">Include homing (G28)</label></div>
           <div class="inline" id="includeReturnWrap" style="margin:.4rem 0;"><input type="checkbox" id="includeReturn" checked><label for="includeReturn">Include return to origin (G0 X0 Y0)</label></div>
           <div class="row">
             <div>
@@ -430,7 +429,7 @@ G90</textarea>
 
     function preLines() {
       const out = [];
-      if (el('includeHoming').checked) out.push('G28 ; home axes');
+      out.push('G28 ; home axes');
       if (sharedHeader().pre) out.push(...sharedHeader().pre.split('\n'));
       return out;
     }
@@ -649,7 +648,7 @@ G90</textarea>
     }
 
     modeInputs.forEach(i => i.addEventListener('change', updateModeUi));
-    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeClearance','probeSpeed','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
+    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeClearance','probeSpeed','includeReturn','startX','startY','endX','endY'].forEach(id => {
       const node = el(id);
       if (!node) return;
       node.addEventListener('input', refreshDerived);
