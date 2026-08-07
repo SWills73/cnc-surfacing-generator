@@ -11,5 +11,5 @@ Open `index.html` in a browser.
 - Dual modes:
   - **Interactive Setup (Mode 1):** M291 prompts capture opposite corners at runtime.
   - **Direct Entry (Mode 2):** Numeric XY inputs generate a standalone ready-to-run file.
-- Optional **RemoteBee Z-probe** sequence in either mode (`G38.2`, `G10 L20`, optional `M500`).
+- Optional **RemoteBee Z-probe** sequence in either mode (`G38.2`, `G10 L20 Z0.00`) with homing kept optional in either mode.
 - Editable pre/post-processing commands, validation warnings, preview, and `.g` export.
