@@ -166,7 +166,6 @@
           <div><label for="probeOffset">Z probe depth offset (mm)</label><input type="number" id="probeOffset" step="0.01" value="5.00"></div>
           <div><label for="probeClearance">Z probe clearance move (mm)</label><input type="number" id="probeClearance" step="0.01" value="3.00"></div>
           <div><label for="probeSpeed">Z probe down speed (mm/min)</label><input type="number" id="probeSpeed" step="1" value="100"></div>
-          <div class="inline" style="padding-top:1.2rem;"><input type="checkbox" id="includeM500" checked><label for="includeM500">Include M500 (Persist)</label></div>
         </div>
       </fieldset>
 
@@ -238,7 +237,6 @@ G90</textarea>
       el('interactiveSection').classList.toggle('hidden', !interactive);
       el('directSection').classList.toggle('hidden', interactive);
       el('includeReturnWrap').style.display = interactive ? 'none' : 'flex';
-      el('includeHoming').checked = interactive;
       el('modeIndicator').textContent = `Mode: ${interactive ? 'Interactive Setup' : 'Direct Entry'}`;
       if (!interactive && !el('includeReturn').checked) el('includeReturn').checked = true;
       refreshDerived();
@@ -308,7 +306,7 @@ G90</textarea>
       if (dpp > 3) warnings.push('Depth per pass is aggressive (>3mm).');
 
       if (!probeOn) {
-        const unusualProbe = num('probeOffset') !== defaults.probeOffset || num('probeClearance') !== defaults.probeClearance || num('probeSpeed') !== defaults.probeSpeed || !el('includeM500').checked;
+        const unusualProbe = num('probeOffset') !== defaults.probeOffset || num('probeClearance') !== defaults.probeClearance || num('probeSpeed') !== defaults.probeSpeed;
         if (unusualProbe) warnings.push('Z-probe is disabled, but probe settings were modified (inconsistent state).');
       }
 
@@ -418,15 +416,15 @@ G90</textarea>
       const clear = num('probeClearance');
       const speed = num('probeSpeed');
       const lines = [
-        '; Z Probe sequence (RemoteBee compatible)',
+        '; Probe surface and establish Z0 (RemoteBee compatible)',
         `G38.2 Z-20 F${rounded(speed, 0)}              ; probe down to touch surface`,
-        `G10 L20 Z${rounded(offset, 2)}                ; set Z offset`,
+        'G10 L20 Z0.00                ; set probed surface as Z0',
+        `; Probe offset setting: ${rounded(offset, 2)}mm`,
         'G21                         ; ensure mm units',
         'G91                         ; relative mode',
         `G0 Z${rounded(clear, 2)}                     ; clearance move up`,
         'G90                         ; return to absolute'
       ];
-      if (el('includeM500').checked) lines.push('M500                         ; persist work zero across power cycles');
       return lines;
     }
 
@@ -450,15 +448,17 @@ G90</textarea>
       lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
       for (let p = 1; p <= cfg.passes; p++) {
         const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
-        lines.push(`; Pass ${p}/${cfg.passes}`);
+        lines.push(`; Pass ${p}/${cfg.passes} - Z depth ${rounded(z,3)}mm`);
         lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
         let y = geo.minY;
         let forward = true;
         while (y <= geo.maxY + 1e-9) {
           const tx = forward ? geo.maxX : geo.minX;
           lines.push(`G1 X${rounded(tx,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
-          y += cfg.stepMm;
-          if (y <= geo.maxY + 1e-9) lines.push(`G1 Y${rounded(Math.min(y, geo.maxY),3)} F${rounded(cfg.feed,0)}`);
+          if (y >= geo.maxY - 1e-9) break;
+          const nextY = Math.min(y + cfg.stepMm, geo.maxY);
+          lines.push(`G1 Y${rounded(nextY,3)} F${rounded(cfg.feed,0)}`);
+          y = nextY;
           forward = !forward;
         }
         lines.push(`G0 Z${rounded(cfg.clear,3)}`);
@@ -470,11 +470,11 @@ G90</textarea>
     function buildInteractiveCaptureAndBounds() {
       const lines = [];
       lines.push('M291 P"Move to starting XY position for surfacing and press OK" R"Surfacing Setup" S3');
-      lines.push('var startX = move.axes[0].machinePosition');
-      lines.push('var startY = move.axes[1].machinePosition');
+      lines.push('var startX = move.axes[0].userPosition');
+      lines.push('var startY = move.axes[1].userPosition');
       lines.push('M291 P"Move to ending XY position for surfacing and press OK" R"Surfacing Setup" S3');
-      lines.push('var endX = move.axes[0].machinePosition');
-      lines.push('var endY = move.axes[1].machinePosition');
+      lines.push('var endX = move.axes[0].userPosition');
+      lines.push('var endY = move.axes[1].userPosition');
       lines.push('if var.startX = var.endX && var.startY = var.endY');
       lines.push('  abort "Start and end positions cannot be identical."');
       lines.push('endif');
@@ -491,7 +491,7 @@ G90</textarea>
       const totalDepth = num('totalDepth');
       for (let p = 1; p <= cfg.passes; p++) {
         const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
-        lines.push(`; Pass ${p}/${cfg.passes}`);
+        lines.push(`; Pass ${p}/${cfg.passes} - Z depth ${rounded(z,3)}mm`);
         lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
         lines.push('var yPos = var.minY');
         lines.push('var dir = 1');
@@ -501,10 +501,15 @@ G90</textarea>
         lines.push('  else');
         lines.push(`    G1 X{var.minX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
         lines.push('  endif');
-        lines.push(`  set var.yPos = var.yPos + ${rounded(cfg.stepMm,3)}`);
-        lines.push('  if var.yPos <= var.maxY');
-        lines.push(`    G1 Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('  if var.yPos >= var.maxY');
+        lines.push('    break');
         lines.push('  endif');
+        lines.push(`  var nextY = var.yPos + ${rounded(cfg.stepMm,3)}`);
+        lines.push('  if var.nextY > var.maxY');
+        lines.push('    set var.nextY = var.maxY');
+        lines.push('  endif');
+        lines.push(`  G1 Y{var.nextY} F${rounded(cfg.feed,0)}`);
+        lines.push('  set var.yPos = var.nextY');
         lines.push('  if var.dir = 1');
         lines.push('    set var.dir = 0');
         lines.push('  else');
@@ -574,11 +579,13 @@ G90</textarea>
         lines.push(...buildInteractiveCaptureAndBounds());
         lines.push(...probeLines());
         lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
+        lines.push('G4 S2 ; allow spindle to reach speed');
         lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
         lines.push(...buildInteractiveSurfacingCore(cfg));
       } else {
         lines.push(...probeLines());
         lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
+        lines.push('G4 S2 ; allow spindle to reach speed');
         lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
         lines.push(...buildSurfacingCoreForDirect(cfg, geo));
       }
@@ -636,7 +643,7 @@ G90</textarea>
     }
 
     modeInputs.forEach(i => i.addEventListener('change', updateModeUi));
-    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeOffset','probeClearance','probeSpeed','includeM500','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
+    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeOffset','probeClearance','probeSpeed','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
       const node = el(id);
       if (!node) return;
       node.addEventListener('input', refreshDerived);
