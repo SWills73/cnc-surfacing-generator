@@ -163,7 +163,6 @@
       <fieldset id="probeSection">
         <legend>Z-Probe Settings</legend>
         <div class="row">
-          <div><label for="probeOffset">Z probe depth offset (mm)</label><input type="number" id="probeOffset" step="0.01" value="5.00"></div>
           <div><label for="probeClearance">Z probe clearance move (mm)</label><input type="number" id="probeClearance" step="0.01" value="3.00"></div>
           <div><label for="probeSpeed">Z probe down speed (mm/min)</label><input type="number" id="probeSpeed" step="1" value="100"></div>
         </div>
@@ -218,7 +217,8 @@ G90</textarea>
   <script>
     const el = (id) => document.getElementById(id);
     const modeInputs = document.querySelectorAll('input[name="mode"]');
-    const defaults = { probeOffset: 5.00, probeClearance: 3.00, probeSpeed: 100 };
+    const defaults = { probeClearance: 3.00, probeSpeed: 100 };
+    const spindleDelaySeconds = 2;
 
     function num(id) {
       const v = parseFloat(el(id).value);
@@ -297,7 +297,6 @@ G90</textarea>
       if (!(clear > 0)) errors.push('Z clearance must be positive.');
       if (!(wcs >= 1 && wcs <= 20)) errors.push('Coordinate system number must be between 1 and 20.');
       if (probeOn) {
-        if (!(num('probeOffset') > 0)) errors.push('Z probe depth offset must be positive.');
         if (!(num('probeClearance') > 0)) errors.push('Z probe clearance move must be positive.');
         if (!(num('probeSpeed') > 0)) errors.push('Z probe down speed must be positive.');
       }
@@ -306,7 +305,7 @@ G90</textarea>
       if (dpp > 3) warnings.push('Depth per pass is aggressive (>3mm).');
 
       if (!probeOn) {
-        const unusualProbe = num('probeOffset') !== defaults.probeOffset || num('probeClearance') !== defaults.probeClearance || num('probeSpeed') !== defaults.probeSpeed;
+        const unusualProbe = num('probeClearance') !== defaults.probeClearance || num('probeSpeed') !== defaults.probeSpeed;
         if (unusualProbe) warnings.push('Z-probe is disabled, but probe settings were modified (inconsistent state).');
       }
 
@@ -380,8 +379,11 @@ G90</textarea>
       const x = 60, y = 40;
       let lines = '';
       const s = Math.max(1, stepMm * scale);
-      for (let yy = y; yy <= y + rh; yy += s) {
+      let yy = y;
+      while (yy <= y + rh + 1e-9) {
         lines += `<line x1="${x}" y1="${yy}" x2="${x + rw}" y2="${yy}" stroke="#38bdf8" stroke-width="1" />`;
+        if (yy >= y + rh - 1e-9) break;
+        yy = Math.min(yy + s, y + rh);
       }
       svg.innerHTML = `
         <rect x="${x}" y="${y}" width="${rw}" height="${rh}" fill="#111827" stroke="#94a3b8" stroke-width="2" />
@@ -412,14 +414,12 @@ G90</textarea>
 
     function probeLines() {
       if (!el('useProbe').checked) return [];
-      const offset = num('probeOffset');
       const clear = num('probeClearance');
       const speed = num('probeSpeed');
       const lines = [
         '; Probe surface and establish Z0 (RemoteBee compatible)',
         `G38.2 Z-20 F${rounded(speed, 0)}              ; probe down to touch surface`,
         'G10 L20 Z0.00                ; set probed surface as Z0',
-        `; Probe offset setting: ${rounded(offset, 2)}mm`,
         'G21                         ; ensure mm units',
         'G91                         ; relative mode',
         `G0 Z${rounded(clear, 2)}                     ; clearance move up`,
@@ -488,32 +488,38 @@ G90</textarea>
     function buildInteractiveSurfacingCore(cfg) {
       const lines = [];
       lines.push('G0 X{var.minX} Y{var.minY}');
+      lines.push('var yPos = 0');
+      lines.push('var dir = 1');
+      lines.push('var nextY = 0');
+      lines.push('var done = 0');
       const totalDepth = num('totalDepth');
       for (let p = 1; p <= cfg.passes; p++) {
         const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
         lines.push(`; Pass ${p}/${cfg.passes} - Z depth ${rounded(z,3)}mm`);
         lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
-        lines.push('var yPos = var.minY');
-        lines.push('var dir = 1');
-        lines.push('while var.yPos <= var.maxY');
+        lines.push('set var.yPos = var.minY');
+        lines.push('set var.dir = 1');
+        lines.push('set var.done = 0');
+        lines.push('while var.done = 0');
         lines.push('  if var.dir = 1');
         lines.push(`    G1 X{var.maxX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
         lines.push('  else');
         lines.push(`    G1 X{var.minX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
         lines.push('  endif');
         lines.push('  if var.yPos >= var.maxY');
-        lines.push('    break');
-        lines.push('  endif');
-        lines.push(`  var nextY = var.yPos + ${rounded(cfg.stepMm,3)}`);
-        lines.push('  if var.nextY > var.maxY');
-        lines.push('    set var.nextY = var.maxY');
-        lines.push('  endif');
-        lines.push(`  G1 Y{var.nextY} F${rounded(cfg.feed,0)}`);
-        lines.push('  set var.yPos = var.nextY');
-        lines.push('  if var.dir = 1');
-        lines.push('    set var.dir = 0');
+        lines.push('    set var.done = 1');
         lines.push('  else');
-        lines.push('    set var.dir = 1');
+        lines.push(`    set var.nextY = var.yPos + ${rounded(cfg.stepMm,3)}`);
+        lines.push('    if var.nextY > var.maxY');
+        lines.push('      set var.nextY = var.maxY');
+        lines.push('    endif');
+        lines.push(`    G1 Y{var.nextY} F${rounded(cfg.feed,0)}`);
+        lines.push('    set var.yPos = var.nextY');
+        lines.push('    if var.dir = 1');
+        lines.push('      set var.dir = 0');
+        lines.push('    else');
+        lines.push('      set var.dir = 1');
+        lines.push('    endif');
         lines.push('  endif');
         lines.push('endwhile');
         lines.push(`G0 Z${rounded(cfg.clear,3)}`);
@@ -533,7 +539,7 @@ G90</textarea>
 
     function filenameSuggestion(mode, geo) {
       if (mode === 'interactive') return 'surfacing_Mode1_interactive.g';
-      const probeTag = el('useProbe').checked ? `Z${rounded(num('probeOffset'), 1)}` : 'NoProbe';
+      const probeTag = el('useProbe').checked ? 'Probe' : 'NoProbe';
       if (!geo) return `surfacing_direct_${probeTag}.g`;
       return `surfacing_${rounded(geo.w,0)}x${rounded(geo.h,0)}mm_${probeTag}.g`;
     }
@@ -579,13 +585,13 @@ G90</textarea>
         lines.push(...buildInteractiveCaptureAndBounds());
         lines.push(...probeLines());
         lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
-        lines.push('G4 S2 ; allow spindle to reach speed');
+        lines.push(`G4 S${spindleDelaySeconds} ; allow spindle to reach speed`);
         lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
         lines.push(...buildInteractiveSurfacingCore(cfg));
       } else {
         lines.push(...probeLines());
         lines.push(`M3 S${rounded(cfg.spindle,0)} ; spindle on`);
-        lines.push('G4 S2 ; allow spindle to reach speed');
+        lines.push(`G4 S${spindleDelaySeconds} ; allow spindle to reach speed`);
         lines.push(`G0 Z${rounded(cfg.clear,2)} ; move to clearance`);
         lines.push(...buildSurfacingCoreForDirect(cfg, geo));
       }
@@ -643,7 +649,7 @@ G90</textarea>
     }
 
     modeInputs.forEach(i => i.addEventListener('change', updateModeUi));
-    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeOffset','probeClearance','probeSpeed','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
+    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeClearance','probeSpeed','includeHoming','includeReturn','startX','startY','endX','endY'].forEach(id => {
       const node = el(id);
       if (!node) return;
       node.addEventListener('input', refreshDerived);
