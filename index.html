@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CNC Surfacing G-Code Generator — Workbee / Duet</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #1a1d23;
+      --panel: #22262f;
+      --card: #2a2f3b;
+      --border: #3a3f4e;
+      --accent: #4f8ef7;
+      --accent2: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --font: 'Segoe UI', system-ui, sans-serif;
+      --radius: 8px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ───────────────────────────────── */
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header svg { flex-shrink: 0; }
+    header h1 { font-size: 18px; font-weight: 700; color: var(--accent); letter-spacing: .4px; }
+    header p  { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+    /* ── Main layout ─────────────────────────── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      overflow: hidden;
+      height: calc(100vh - 57px);
+    }
+
+    /* ── Left panel (form) ───────────────────── */
+    #form-panel {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* ── Sections ────────────────────────────── */
+    .section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      cursor: pointer;
+      user-select: none;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+    .section-header:hover { background: #30374a; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--accent);
+    }
+    .section-icon { font-size: 15px; }
+    .chevron { transition: transform .2s; color: var(--muted); font-size: 11px; }
+    .section.collapsed .chevron { transform: rotate(-90deg); }
+    .section-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .section.collapsed .section-body { display: none; }
+
+    /* ── Field rows ──────────────────────────── */
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .field-row.triple { grid-template-columns: 1fr 1fr 1fr; }
+    .field-row.full   { grid-template-columns: 1fr; }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    label {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    input[type="number"], input[type="text"], select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+      width: 100%;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    input.warn  { border-color: var(--warn) !important; }
+    input.error { border-color: var(--danger) !important; }
+
+    .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .hint.ok   { color: var(--accent2); }
+    .hint.warn { color: var(--warn); }
+    .hint.err  { color: var(--danger); }
+
+    /* preset buttons */
+    .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+    .preset-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .preset-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* checkbox field */
+    .check-field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .check-field input[type="checkbox"] {
+      width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer;
+    }
+    .check-field label {
+      font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--text); cursor: pointer;
+    }
+
+    /* ── Validation banners ──────────────────── */
+    #warnings {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .alert {
+      padding: 8px 12px;
+      border-radius: 5px;
+      font-size: 12px;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .alert-warn  { background: #42380a; border: 1px solid var(--warn);   color: var(--warn); }
+    .alert-error { background: #3b0f0f; border: 1px solid var(--danger); color: var(--danger); }
+    .alert-ok    { background: #0d2a1f; border: 1px solid var(--accent2);color: var(--accent2); }
+
+    /* ── Generate button ─────────────────────── */
+    #btn-generate {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 11px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+      letter-spacing: .4px;
+      transition: background .15s, opacity .15s;
+    }
+    #btn-generate:hover  { background: #3b7de0; }
+    #btn-generate:active { opacity: .85; }
+
+    /* ── Right panel ─────────────────────────── */
+    #right-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* tabs */
+    .tabs {
+      display: flex;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+    }
+    .tab-btn {
+      padding: 12px 18px;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-btn:hover  { color: var(--text); }
+
+    .tab-panel { display: none; flex: 1; overflow: hidden; }
+    .tab-panel.active { display: flex; flex-direction: column; }
+
+    /* ── Preview tab ─────────────────────────── */
+    #tab-preview {
+      padding: 16px;
+      gap: 12px;
+      overflow-y: auto;
+    }
+    #preview-svg-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      min-height: 280px;
+    }
+    #preview-svg { width: 100%; max-height: 300px; }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .info-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+    .info-card .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .info-card .value { font-size: 16px; font-weight: 700; color: var(--accent2); margin-top: 2px; }
+    .info-card .sub   { font-size: 11px; color: var(--muted); }
+
+    #ops-list {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+    #ops-list h4 { color: var(--text); font-size: 13px; margin-bottom: 6px; }
+
+    /* ── G-Code tab ──────────────────────────── */
+    #tab-gcode {
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #gcode-toolbar {
+      display: flex;
+      gap: 8px;
+      padding: 10px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    #gcode-toolbar span { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+    .action-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .action-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .action-btn.primary:hover { background: #3b7de0; }
+
+    #gcode-output {
+      flex: 1;
+      background: #0f1117;
+      color: #a8d5a2;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 14px 16px;
+      overflow-y: auto;
+      white-space: pre;
+      resize: none;
+      border: none;
+      outline: none;
+      tab-size: 2;
+    }
+
+    /* ── Footer ──────────────────────────────── */
+    footer {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    footer strong { color: var(--accent2); }
+
+    /* ── Toast ───────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 60px;
+      right: 24px;
+      background: var(--accent2);
+      color: #0a1f14;
+      padding: 10px 18px;
+      border-radius: var(--radius);
+      font-weight: 700;
+      font-size: 13px;
+      opacity: 0;
+      transition: opacity .3s;
+      pointer-events: none;
+      z-index: 999;
+    }
+    #toast.show { opacity: 1; }
+
+    /* ── Responsive ──────────────────────────── */
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; height: auto; }
+      #form-panel { height: auto; overflow-y: visible; }
+      #right-panel { min-height: 500px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+    <rect width="36" height="36" rx="8" fill="#4f8ef7" opacity=".15"/>
+    <rect x="6" y="6" width="24" height="24" rx="2" stroke="#4f8ef7" stroke-width="1.5" fill="none"/>
+    <path d="M10 26 L10 10 L26 10" stroke="#34d399" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 22 L16 18 L20 22 L24 14" stroke="#4f8ef7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <div>
+    <h1>CNC Surfacing G-Code Generator</h1>
+    <p>Workbee &amp; Duet Controller — production-ready surfacing programs</p>
+  </div>
+</header>
+
+<main>
+  <!-- ═══════════ LEFT FORM PANEL ═══════════ -->
+  <div id="form-panel" role="form" aria-label="Surfacing parameters">
+
+    <!-- Work Area -->
+    <div class="section" id="sec-workarea">
+      <div class="section-header" role="button" aria-expanded="true" tabindex="0">
+        <span class="section-title"><span class="section-icon">📐</span>Work Area Definition</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="field-row">
+          <div class="field">
+            <label for="startX">Start X (mm)</label>
+            <input type="number" id="startX" value="0" step="0.1" aria-describedby="startX-hint" />
+            <span class="hint" id="startX-hint">Left edge of work area</span>
+          </div>
+          <div class="field">
+            <label for="startY">Start Y (mm)</label>
+            <input type="number" id="startY" value="0" step="0.1" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="endX">End X (mm)</label>
+            <input type="number" id="endX" value="200" step="0.1" />
+          </div>
+          <div class="field">
+            <label for="endY">End Y (mm)</label>
+            <input type="number" id="endY" value="200" step="0.1" />
+          </div>
+        </div>
+        <div class="hint" id="area-hint" style="margin-top:2px">Width: 200 mm &nbsp;|&nbsp; Height: 200 mm &nbsp;|&nbsp; Area: 40 000 mm²</div>
+      </div>
+    </div>
+
+    <!-- Bit & Material -->
+    <div class="section" id="sec-bit">
+      <div class="section-header" role="button" aria-expanded="true" tabindex="0">
+        <span class="section-title"><span class="section-icon">🔩</span>Bit &amp; Material Properties</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="field-row">
+          <div class="field">
+            <label for="bitDia">Bit Diameter (mm)</label>
+            <input type="number" id="bitDia" value="25" min="1" max="200" step="0.1" />
+            <span class="hint" id="stepover-mm-hint">Stepover: 12.50 mm</span>
+          </div>
+          <div class="field">
+            <label for="depthPerPass">Depth per Pass (mm)</label>
+            <input type="number" id="depthPerPass" value="0.5" min="0.05" max="10" step="0.05" />
+            <span class="hint" id="depth-hint">Recommended: 0.1–3 mm</span>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="totalDepth">Total Depth (mm)</label>
+            <input type="number" id="totalDepth" value="1" min="0.05" max="100" step="0.05" />
+            <span class="hint" id="passes-hint">→ 2 passes calculated</span>
+          </div>
+          <div class="field">
+            <label for="numPasses">Passes (override)</label>
+            <input type="number" id="numPasses" value="" placeholder="auto" min="1" max="999" step="1" />
+            <span class="hint">Leave blank to auto-calculate</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cutting Parameters -->
+    <div class="section" id="sec-cut">
+      <div class="section-header" role="button" aria-expanded="true" tabindex="0">
+        <span class="section-title"><span class="section-icon">⚙️</span>Cutting Parameters</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="field-row">
+          <div class="field">
+            <label for="stepover">Step-over (%)</label>
+            <input type="number" id="stepover" value="50" min="1" max="100" step="1" />
+            <span class="hint" id="stepover-hint">= 12.50 mm per pass</span>
+          </div>
+          <div class="field">
+            <label for="feedRate">Feed Rate (mm/min)</label>
+            <input type="number" id="feedRate" value="8000" min="100" max="50000" step="100" />
+            <div class="presets">
+              <button class="preset-btn" data-feed="3000">Wood</button>
+              <button class="preset-btn" data-feed="5000">MDF</button>
+              <button class="preset-btn" data-feed="8000">Ply</button>
+              <button class="preset-btn" data-feed="1500">Alu</button>
+              <button class="preset-btn" data-feed="600">Steel</button>
+            </div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="spindleRPM">Spindle Speed (RPM)</label>
+            <input type="number" id="spindleRPM" value="20000" min="100" max="30000" step="500" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Machine Setup -->
+    <div class="section" id="sec-machine">
+      <div class="section-header" role="button" aria-expanded="true" tabindex="0">
+        <span class="section-title"><span class="section-icon">🖥️</span>Machine Setup</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="field-row">
+          <div class="field">
+            <label for="zClear">Z Clearance (mm)</label>
+            <input type="number" id="zClear" value="10" min="2" max="100" step="1" />
+            <span class="hint">Height for rapid moves</span>
+          </div>
+          <div class="field">
+            <label for="coordSys">Coordinate System</label>
+            <input type="number" id="coordSys" value="20" min="1" max="20" step="1" />
+            <span class="hint">G54=1 … G59.3=20</span>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="probeThick">Probe Thickness (mm)</label>
+            <input type="number" id="probeThick" value="9.02" min="0" max="50" step="0.01" />
+            <span class="hint">Touch-plate / tool setter thickness</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Advanced (collapsible) -->
+    <div class="section collapsed" id="sec-advanced">
+      <div class="section-header" role="button" aria-expanded="false" tabindex="0">
+        <span class="section-title"><span class="section-icon">🔧</span>Advanced Settings</span>
+        <span class="chevron" aria-hidden="true">▼</span>
+      </div>
+      <div class="section-body">
+        <div class="field-row">
+          <div class="field">
+            <label for="probeSpeed">Probe Speed (mm/min)</label>
+            <input type="number" id="probeSpeed" value="120" min="10" max="1000" step="10" />
+          </div>
+          <div class="field">
+            <label for="probeTravelSpeed">Probe Travel (mm/min)</label>
+            <input type="number" id="probeTravelSpeed" value="300" min="10" max="3000" step="10" />
+          </div>
+        </div>
+        <div class="check-field">
+          <input type="checkbox" id="debugOutput" />
+          <label for="debugOutput">Include debug / comment output in G-code</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Warnings -->
+    <div id="warnings" aria-live="polite"></div>
+
+    <!-- Generate -->
+    <button id="btn-generate" type="button">⚡ Generate G-Code</button>
+
+  </div><!-- /form-panel -->
+
+  <!-- ═══════════ RIGHT PANEL ═══════════ -->
+  <div id="right-panel">
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" role="tab" aria-selected="true"  data-tab="preview" id="tab-preview-btn">Preview</button>
+      <button class="tab-btn"        role="tab" aria-selected="false" data-tab="gcode"   id="tab-gcode-btn">G-Code</button>
+    </div>
+
+    <!-- Preview tab -->
+    <div class="tab-panel active" id="tab-preview" role="tabpanel" aria-labelledby="tab-preview-btn">
+      <div id="preview-svg-wrap">
+        <svg id="preview-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" aria-label="Work area preview"></svg>
+      </div>
+
+      <div class="info-grid" id="info-cards" style="padding:0 16px">
+        <div class="info-card">
+          <div class="label">Passes</div>
+          <div class="value" id="ic-passes">—</div>
+          <div class="sub" id="ic-passes-sub">depth info</div>
+        </div>
+        <div class="info-card">
+          <div class="label">Tool Paths</div>
+          <div class="value" id="ic-strips">—</div>
+          <div class="sub" id="ic-strips-sub">per pass</div>
+        </div>
+        <div class="info-card">
+          <div class="label">Est. Time</div>
+          <div class="value" id="ic-time">—</div>
+          <div class="sub" id="ic-time-sub">at set feed rate</div>
+        </div>
+      </div>
+
+      <div id="ops-list" style="margin:8px 16px 16px">
+        <h4>Operations Summary</h4>
+        <div id="ops-content">Press <strong>Generate G-Code</strong> to update.</div>
+      </div>
+    </div>
+
+    <!-- G-Code tab -->
+    <div class="tab-panel" id="tab-gcode" role="tabpanel" aria-labelledby="tab-gcode-btn">
+      <div id="gcode-toolbar">
+        <button class="action-btn primary" id="btn-export">⬇ Export .g File</button>
+        <button class="action-btn" id="btn-copy">📋 Copy to Clipboard</button>
+        <span id="gcode-stats">—</span>
+      </div>
+      <textarea id="gcode-output" readonly aria-label="Generated G-code output" spellcheck="false">; Press "Generate G-Code" to create your program.</textarea>
+    </div>
+
+  </div><!-- /right-panel -->
+</main>
+
+<footer>
+  <span>CNC Surfacing Generator &nbsp;|&nbsp; Workbee &amp; Duet Controller</span>
+  <span id="footer-status">Ready — configure parameters and press Generate</span>
+  <span>Estimated file: <strong id="footer-size">—</strong></span>
+</footer>
+
+<div id="toast" role="status" aria-live="assertive"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════════ */
+function $(id) { return document.getElementById(id); }
+function val(id, fallback = 0) {
+  const v = parseFloat($(id).value);
+  return isNaN(v) ? fallback : v;
+}
+
+function showToast(msg, dur = 2500) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), dur);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SECTION COLLAPSE TOGGLE
+═══════════════════════════════════════════════════════════ */
+document.querySelectorAll('.section-header').forEach(h => {
+  h.addEventListener('click', () => {
+    const sec = h.closest('.section');
+    const expanded = !sec.classList.contains('collapsed');
+    sec.classList.toggle('collapsed', expanded);
+    h.setAttribute('aria-expanded', String(!expanded));
+  });
+  h.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); h.click(); } });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   TABS
+═══════════════════════════════════════════════════════════ */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected','true');
+    $('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   LIVE HINTS
+═══════════════════════════════════════════════════════════ */
+function updateHints() {
+  const sx = val('startX'), sy = val('startY'), ex = val('endX'), ey = val('endY');
+  const w = Math.abs(ex - sx), h = Math.abs(ey - sy);
+  $('area-hint').textContent = `Width: ${w.toFixed(1)} mm  |  Height: ${h.toFixed(1)} mm  |  Area: ${(w * h).toLocaleString()} mm²`;
+
+  const dia = val('bitDia', 25);
+  const soP = val('stepover', 50);
+  const soMM = dia * soP / 100;
+  $('stepover-hint').textContent = `= ${soMM.toFixed(2)} mm per strip`;
+  $('stepover-mm-hint').textContent = `Stepover: ${soMM.toFixed(2)} mm`;
+
+  const dpp = val('depthPerPass', 0.5);
+  const td  = val('totalDepth', 1);
+  const calculatedPasses = Math.ceil(td / dpp);
+  $('passes-hint').textContent = `→ ${calculatedPasses} pass${calculatedPasses === 1 ? '' : 'es'} calculated`;
+
+  const dh = $('depth-hint');
+  if (dpp > 3) { dh.textContent = '⚠ Aggressive depth — verify material!'; dh.className = 'hint warn'; }
+  else if (dpp < 0.1) { dh.textContent = '⚠ Very shallow — may cause tool chatter'; dh.className = 'hint warn'; }
+  else { dh.textContent = 'Recommended: 0.1–3 mm'; dh.className = 'hint'; }
+}
+
+['startX','startY','endX','endY','bitDia','stepover','depthPerPass','totalDepth'].forEach(id =>
+  $(id).addEventListener('input', updateHints));
+updateHints();
+
+/* ═══════════════════════════════════════════════════════════
+   FEED PRESETS
+═══════════════════════════════════════════════════════════ */
+document.querySelectorAll('.preset-btn[data-feed]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $('feedRate').value = btn.dataset.feed;
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   VALIDATION
+═══════════════════════════════════════════════════════════ */
+function validate() {
+  const msgs = [];
+
+  const sx = val('startX'), sy = val('startY');
+  const ex = val('endX'),   ey = val('endY');
+  const w  = Math.abs(ex - sx), h = Math.abs(ey - sy);
+
+  if (w === 0 && h === 0) msgs.push({ type: 'error', text: 'Start and End positions are identical — work area is zero.' });
+  else if (w === 0) msgs.push({ type: 'error', text: 'X work width is 0 — check Start X and End X.' });
+  else if (h === 0) msgs.push({ type: 'error', text: 'Y work height is 0 — check Start Y and End Y.' });
+
+  if (w > 500) msgs.push({ type: 'warn', text: `Work area X span (${w} mm) is > 500 mm — verify machine travel limits.` });
+  if (h > 500) msgs.push({ type: 'warn', text: `Work area Y span (${h} mm) is > 500 mm — verify machine travel limits.` });
+
+  const dia = val('bitDia', 25);
+  const soP = val('stepover', 50);
+  if (soP > 100) msgs.push({ type: 'warn', text: `Step-over ${soP}% exceeds 100% of bit diameter — tool may skip material.` });
+
+  const dpp = val('depthPerPass', 0.5);
+  if (dpp > 3) msgs.push({ type: 'warn', text: `Depth per pass ${dpp} mm is aggressive (>3 mm) — reduce for most materials.` });
+  if (dpp <= 0) msgs.push({ type: 'error', text: 'Depth per pass must be greater than 0.' });
+
+  const td = val('totalDepth', 1);
+  if (td <= 0) msgs.push({ type: 'error', text: 'Total depth must be greater than 0.' });
+
+  const feed = val('feedRate', 8000);
+  if (feed <= 0) msgs.push({ type: 'error', text: 'Feed rate must be greater than 0.' });
+
+  const zc = val('zClear', 10);
+  if (zc < 2) msgs.push({ type: 'warn', text: 'Z clearance < 2 mm — risk of collision on rapids.' });
+
+  const cs = val('coordSys', 20);
+  if (cs < 1 || cs > 20) msgs.push({ type: 'error', text: 'Coordinate system must be between 1 and 20.' });
+
+  // render
+  const warn = $('warnings');
+  warn.innerHTML = '';
+  msgs.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'alert alert-' + (m.type === 'error' ? 'error' : 'warn');
+    div.textContent = (m.type === 'error' ? '✖ ' : '⚠ ') + m.text;
+    warn.appendChild(div);
+  });
+
+  return msgs.every(m => m.type !== 'error');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GCODE GENERATION
+═══════════════════════════════════════════════════════════ */
+function getParams() {
+  const sx   = val('startX');
+  const sy   = val('startY');
+  const ex   = val('endX');
+  const ey   = val('endY');
+  const xMin = Math.min(sx, ex),  xMax = Math.max(sx, ex);
+  const yMin = Math.min(sy, ey),  yMax = Math.max(sy, ey);
+
+  const dia        = val('bitDia', 25);
+  const soP        = val('stepover', 50);
+  const soMM       = dia * soP / 100;
+  const dpp        = val('depthPerPass', 0.5);
+  const td         = val('totalDepth', 1);
+  const manPasses  = parseInt($('numPasses').value);
+  const passes     = (!isNaN(manPasses) && manPasses >= 1) ? manPasses : Math.max(1, Math.ceil(td / dpp));
+
+  const feed       = val('feedRate', 8000);
+  const rpm        = val('spindleRPM', 20000);
+  const zClear     = val('zClear', 10);
+  const cs         = Math.round(val('coordSys', 20));
+  const probeT     = val('probeThick', 9.02);
+  const probeSpd   = val('probeSpeed', 120);
+  const probeTrvl  = val('probeTravelSpeed', 300);
+  const debug      = $('debugOutput').checked;
+
+  const width  = xMax - xMin;
+  const height = yMax - yMin;
+  const strips = Math.max(1, Math.ceil(height / soMM));
+
+  return { xMin, xMax, yMin, yMax, width, height, dia, soP, soMM, dpp, td, passes, feed, rpm, zClear, cs, probeT, probeSpd, probeTrvl, debug, strips };
+}
+
+function csLabel(cs) {
+  // cs=1 → G54, cs=2 → G55, …, cs=6 → G59
+  if (cs >= 1 && cs <= 6)   return `G${53 + cs}`;
+  if (cs === 7)              return 'G59.1';
+  if (cs === 8)              return 'G59.2';
+  if (cs === 9)              return 'G59.3';
+  return `; extended coord system P${cs}`;
+}
+
+function generateGCode(p) {
+  const ts = new Date().toISOString().replace('T',' ').substring(0,19);
+  const fname = `surfacing_${p.width.toFixed(0)}x${p.height.toFixed(0)}mm_${p.td.toFixed(1)}depth`;
+  const lines = [];
+  const L = s => lines.push(s);
+  const DBG = s => { if (p.debug) L(`; [DBG] ${s}`); };
+
+  L('; ============================================================');
+  L(`; CNC Surfacing Program — Workbee / Duet Controller`);
+  L(`; Generated: ${ts}`);
+  L(`; File:      ${fname}.g`);
+  L('; ============================================================');
+  L(`; Work area : X${p.xMin} → X${p.xMax}  (${p.width.toFixed(1)} mm)`);
+  L(`; Work area : Y${p.yMin} → Y${p.yMax}  (${p.height.toFixed(1)} mm)`);
+  L(`; Bit dia   : ${p.dia} mm`);
+  L(`; Step-over : ${p.soP}%  =  ${p.soMM.toFixed(2)} mm`);
+  L(`; Depth/pass: ${p.dpp} mm`);
+  L(`; Passes    : ${p.passes}`);
+  L(`; Total dep : ${(p.passes * p.dpp).toFixed(2)} mm`);
+  L(`; Feed rate : ${p.feed} mm/min`);
+  L(`; Spindle   : ${p.rpm} RPM`);
+  L(`; Z clear   : ${p.zClear} mm`);
+  L(`; Coord sys : ${csLabel(p.cs)} (P${p.cs})`);
+  L(`; Probe thk : ${p.probeT} mm`);
+  L('; ============================================================');
+  L('');
+
+  L('; === SAFETY: Units, absolute mode ===');
+  L('G21        ; Metric (mm)');
+  L('G90        ; Absolute positioning');
+  L('G94        ; Feed rate in mm/min');
+  L('');
+
+  L('; === HOME ALL AXES ===');
+  L('G28        ; Home all axes');
+  DBG('Homing complete');
+  L('');
+
+  L('; === PROBE Z WITH BIT IN SPINDLE ===');
+  L(`; Configure probe: type 5 (NC), speed ${p.probeSpd}, drive Z, dive height 40`);
+  L(`M558 P5 F${p.probeSpd}:${p.probeTrvl} T6 H40 A3 S0.01`);
+  L(`G31 P500 X0 Y0 Z${p.probeT}  ; Set probe trigger height = probe thickness`);
+  L('');
+  L('; Rapid to probing position (centre of work area, above work)');
+  L(`G0 Z${p.zClear}             ; Raise Z to clearance`);
+  const probX = ((p.xMin + p.xMax) / 2).toFixed(2);
+  const probY = ((p.yMin + p.yMax) / 2).toFixed(2);
+  L(`G0 X${probX} Y${probY}    ; Move to probe position`);
+  L(`G0 Z5                       ; Lower Z to 5 mm above work surface`);
+  L('');
+  L('; Execute probe');
+  L('G38.2 Z-40                  ; Probe down (stop on contact)');
+  L('');
+  L(`; Store Z datum in coordinate system P${p.cs} (${csLabel(p.cs)})`);
+  L(`G10 L20 P${p.cs} Z0          ; Zero Z at probe contact point`);
+  DBG(`Z datum stored in P${p.cs}`);
+  L('');
+  L('; Retract after probe');
+  L(`G0 Z${p.zClear}             ; Raise to clearance height`);
+  L('');
+
+  L(`; === START SPINDLE (${p.rpm} RPM) ===`);
+  L(`M3 S${p.rpm}               ; Spindle on, clockwise`);
+  L('G4 P3000                    ; Dwell 3 seconds for spindle to reach speed');
+  L('');
+
+  L(`; === SELECT COORDINATE SYSTEM ${csLabel(p.cs)} ===`);
+  // G54–G59.3 (cs 1–9) are standard; cs 10–20 are Duet extended, addressed via G10 L2
+  if (p.cs >= 1 && p.cs <= 9) {
+    L(csLabel(p.cs) + '              ; Select work coordinate system');
+  } else {
+    L(`G10 L2 P${p.cs} X0 Y0 Z0   ; Ensure WCS P${p.cs} active (Duet extended)`);
+  }
+  L('');
+
+  L('; === RAPID TO START POSITION ===');
+  L(`G0 Z${p.zClear}             ; Ensure Z clearance`);
+  L(`G0 X${p.xMin} Y${p.yMin}   ; Rapid to start corner`);
+  L('');
+
+  L('; ============================================================');
+  L(`; SURFACING PASSES (${p.passes} pass${p.passes > 1 ? 'es' : ''})`);
+  L('; ============================================================');
+
+  for (let pass = 1; pass <= p.passes; pass++) {
+    const zDepth = -(pass * p.dpp);
+    L('');
+    L(`; --- Pass ${pass} of ${p.passes}  (Z = ${zDepth.toFixed(3)} mm) ---`);
+    // Plunge to depth
+    L(`G0 X${p.xMin} Y${p.yMin}   ; Position to pass start`);
+    L(`G1 Z${zDepth.toFixed(3)} F${Math.round(p.feed * 0.25)}  ; Plunge to depth (25% feed)`);
+    L('');
+
+    // Boustrophedon (zig-zag) path
+    for (let strip = 0; strip < p.strips; strip++) {
+      const y = Math.min(p.yMin + strip * p.soMM, p.yMax);
+      const yRounded = parseFloat(y.toFixed(3));
+      const xStart = (strip % 2 === 0) ? p.xMin : p.xMax;
+      const xEnd   = (strip % 2 === 0) ? p.xMax : p.xMin;
+      if (strip > 0) {
+        L(`G0 Z${p.zClear}         ; Retract`);
+        L(`G0 X${xStart} Y${yRounded}  ; Reposition to strip start`);
+        L(`G1 Z${zDepth.toFixed(3)} F${Math.round(p.feed * 0.25)}  ; Plunge`);
+      }
+      L(`G1 X${xEnd} Y${yRounded} F${p.feed}  ; Cut strip ${strip + 1}`);
+      DBG(`Pass ${pass} strip ${strip + 1} at Y=${yRounded}`);
+    }
+
+    L(`G0 Z${p.zClear}         ; Retract after pass ${pass}`);
+  }
+
+  L('');
+  L('; ============================================================');
+  L('; SURFACING COMPLETE — SHUT DOWN');
+  L('; ============================================================');
+  L('');
+  L('M5                          ; Spindle off');
+  L(`G0 Z${p.zClear}             ; Final Z retract`);
+  L(`G0 X${p.xMin} Y${p.yMin}   ; Park at start position`);
+  L('M2                          ; End program');
+  L('');
+  L('; End of file');
+
+  return lines.join('\n');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PREVIEW SVG
+═══════════════════════════════════════════════════════════ */
+function updatePreview(p) {
+  const svg = $('preview-svg');
+  const W = 400, H = 300, PAD = 40;
+  const aw = W - PAD * 2, ah = H - PAD * 2;
+
+  const scaleX = aw / (p.width  || 1);
+  const scaleY = ah / (p.height || 1);
+  const scale  = Math.min(scaleX, scaleY);
+
+  const drawW = p.width  * scale;
+  const drawH = p.height * scale;
+  const offX  = PAD + (aw - drawW) / 2;
+  const offY  = PAD + (ah - drawH) / 2;
+
+  let s = `<rect x="${offX}" y="${offY}" width="${drawW}" height="${drawH}" fill="#1a2540" stroke="#4f8ef7" stroke-width="1.5"/>`;
+
+  // Strips
+  for (let i = 0; i < p.strips; i++) {
+    const yFrac = Math.min(i * p.soMM / (p.height || 1), 1);
+    const sy = offY + yFrac * drawH;
+    const x1 = (i % 2 === 0) ? offX : offX + drawW;
+    const x2 = (i % 2 === 0) ? offX + drawW : offX;
+    const col = i === 0 ? '#34d399' : '#4f8ef733';
+    s += `<line x1="${x1}" y1="${sy}" x2="${x2}" y2="${sy}" stroke="${col}" stroke-width="${i === 0 ? 1.5 : 0.8}"/>`;
+  }
+
+  // Arrows on first strip
+  s += `<polygon points="${offX+10},${offY+6} ${offX+5},${offY-1} ${offX+15},${offY-1}" fill="#34d399" opacity="0.7"/>`;
+
+  // Dimension labels
+  s += `<text x="${offX + drawW/2}" y="${offY + drawH + 22}" text-anchor="middle" font-size="11" fill="#94a3b8">${p.width.toFixed(1)} mm</text>`;
+  s += `<text x="${offX - 18}" y="${offY + drawH/2}" text-anchor="middle" font-size="11" fill="#94a3b8" transform="rotate(-90 ${offX-18} ${offY + drawH/2})">${p.height.toFixed(1)} mm</text>`;
+
+  // Origin marker
+  s += `<circle cx="${offX}" cy="${offY+drawH}" r="4" fill="#fbbf24"/>`;
+  s += `<text x="${offX+6}" y="${offY+drawH+14}" font-size="10" fill="#fbbf24">X${p.xMin},Y${p.yMin}</text>`;
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ESTIMATE TIME
+═══════════════════════════════════════════════════════════ */
+function estimateTime(p) {
+  // Rapid moves approximated at 6000 mm/min
+  const rapidSpeed = 6000;
+  let dist = 0;
+  for (let pass = 0; pass < p.passes; pass++) {
+    for (let strip = 0; strip < p.strips; strip++) {
+      dist += p.width; // cutting distance
+      if (strip > 0) dist += p.soMM; // reposition
+    }
+  }
+  const cutTime = dist / p.feed;
+  const rapidEst = (p.passes * p.strips * p.zClear * 2) / rapidSpeed;
+  const total = cutTime + rapidEst + 3 + 5; // +3 s dwell, +5 s misc
+  const mins = Math.floor(total / 60);
+  const secs = Math.round(total % 60);
+  if (mins === 0) return `${secs} sec`;
+  return `${mins} min ${secs} sec`;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GENERATE BUTTON
+═══════════════════════════════════════════════════════════ */
+$('btn-generate').addEventListener('click', () => {
+  const ok = validate();
+  if (!ok) { showToast('Fix errors before generating', 3000); return; }
+
+  const p    = getParams();
+  const code = generateGCode(p);
+
+  // G-code tab
+  $('gcode-output').value = code;
+  const lines = code.split('\n').length;
+  const bytes = new Blob([code]).size;
+  $('gcode-stats').textContent = `${lines} lines  ·  ${(bytes/1024).toFixed(1)} KB`;
+  $('footer-size').textContent = `${(bytes/1024).toFixed(1)} KB`;
+
+  // info cards
+  $('ic-passes').textContent     = p.passes;
+  $('ic-passes-sub').textContent = `${(p.passes * p.dpp).toFixed(2)} mm total`;
+  $('ic-strips').textContent     = p.strips;
+  $('ic-strips-sub').textContent = `${p.soMM.toFixed(2)} mm stepover`;
+  const estTime = estimateTime(p);
+  $('ic-time').textContent     = estTime;
+  $('ic-time-sub').textContent = `${p.feed} mm/min feed`;
+
+  // ops summary
+  $('ops-content').innerHTML = `
+    1. Home all axes (G28)<br>
+    2. Configure probe (M558) — thickness ${p.probeT} mm<br>
+    3. Rapid to probe position (X${((p.xMin+p.xMax)/2).toFixed(1)} Y${((p.yMin+p.yMax)/2).toFixed(1)})<br>
+    4. Probe Z, store datum in ${csLabel(p.cs)}<br>
+    5. Start spindle at ${p.rpm} RPM — dwell 3 s<br>
+    6. Select coordinate system ${csLabel(p.cs)}<br>
+    7. Rapid to start (X${p.xMin} Y${p.yMin})<br>
+    8. <strong>${p.passes} surfacing pass${p.passes>1?'es':''}</strong> × ${p.strips} strip${p.strips>1?'s':''} per pass<br>
+    9. Spindle off (M5) — retract — park<br>
+  `;
+
+  // preview
+  updatePreview(p);
+
+  $('footer-status').textContent = `Generated — ${p.passes} passes, ${p.strips} strips, ≈ ${estTime}`;
+  showToast('G-code generated ✓');
+});
+
+/* ═══════════════════════════════════════════════════════════
+   EXPORT & COPY
+═══════════════════════════════════════════════════════════ */
+$('btn-export').addEventListener('click', () => {
+  const code = $('gcode-output').value;
+  if (!code.trim() || code.startsWith('; Press')) { showToast('Generate G-code first'); return; }
+
+  const p = getParams();
+  const fname = `surfacing_${p.width.toFixed(0)}x${p.height.toFixed(0)}mm_${p.td.toFixed(1)}depth.g`;
+  const blob = new Blob([code], { type: 'text/plain' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = fname;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Exported: ${fname}`);
+});
+
+$('btn-copy').addEventListener('click', async () => {
+  const code = $('gcode-output').value;
+  if (!code.trim() || code.startsWith('; Press')) { showToast('Generate G-code first'); return; }
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('Copied to clipboard ✓');
+  } catch {
+    $('gcode-output').select();
+    document.execCommand('copy');
+    showToast('Copied ✓');
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+   INITIAL LIVE VALIDATION ON INPUT
+═══════════════════════════════════════════════════════════ */
+document.querySelectorAll('input, select').forEach(el =>
+  el.addEventListener('input', () => { updateHints(); validate(); })
+);
+
+// Initial state
+validate();
+updateHints();
+</script>
+</body>
+</html>
