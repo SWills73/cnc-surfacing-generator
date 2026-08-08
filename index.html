@@ -36,7 +36,19 @@
     .pill { border:1px solid #334155; border-radius:999px; padding:.2rem .6rem; }
     #gcodeOutput { min-height:300px; }
     .warnbox { border:1px solid #7c2d12; background:#431407; padding:.6rem; border-radius:6px; margin-bottom:.8rem; }
+    .previewWrap { position:relative; }
     #previewSvg { width:100%; min-height:230px; background:#0b1220; border:1px solid #334155; border-radius:8px; }
+    .previewOverlay { position:absolute; inset:0; pointer-events:none; }
+    .previewDimInput {
+      position:absolute; width:84px; padding:.2rem .35rem; font-size:.8rem; text-align:center;
+      background:rgba(11,18,32,.92); border:1px solid #64748b; border-radius:6px; color:var(--text); pointer-events:auto;
+    }
+    .previewDimInput[disabled] { color:var(--muted); }
+    .previewDimLabel {
+      position:absolute; font-size:.75rem; color:#cbd5e1; background:rgba(11,18,32,.8);
+      padding:.1rem .3rem; border-radius:999px;
+    }
+    #previewWidthLabel, #previewWidth { transform:translateX(-50%); }
     details summary { cursor:pointer; color:var(--accent); }
     .footerbar { margin-top:.8rem; display:flex; gap:1rem; flex-wrap:wrap; font-size:.9rem; color:var(--muted); }
     @media (max-width: 980px) { .container { grid-template-columns:1fr; } .left { border-right:none; border-bottom:1px solid #334155; } }
@@ -150,24 +162,7 @@
 
       <fieldset id="interactiveSection">
         <legend>Mode 1: Interactive Setup</legend>
-        <div class="row">
-          <div>
-            <label for="startXDisplay">Current Start X</label>
-            <input id="startXDisplay" readonly value="Captured at runtime">
-          </div>
-          <div>
-            <label for="startYDisplay">Current Start Y</label>
-            <input id="startYDisplay" readonly value="Captured at runtime">
-          </div>
-          <div>
-            <label for="endXDisplay">Current End X</label>
-            <input id="endXDisplay" readonly value="Captured at runtime">
-          </div>
-          <div>
-            <label for="endYDisplay">Current End Y</label>
-            <input id="endYDisplay" readonly value="Captured at runtime">
-          </div>
-        </div>
+        <div class="status">Corners are captured at runtime and shown in preview as A/B bounds.</div>
         <div class="status">Status: <span id="interactiveStatus">Awaiting Start Position → Awaiting End Position → Positions Captured</span></div>
       </fieldset>
 
@@ -217,7 +212,15 @@ G90</textarea>
     <section class="right" aria-label="Preview and output panel">
       <div id="warnings"></div>
       <h2 style="margin-top:0;">Preview</h2>
-      <svg id="previewSvg" viewBox="0 0 640 320" role="img" aria-label="Work area preview"></svg>
+      <div class="previewWrap">
+        <svg id="previewSvg" viewBox="0 0 640 320" role="img" aria-label="Work area preview"></svg>
+        <div id="previewOverlay" class="previewOverlay hidden" aria-hidden="true">
+          <span id="previewWidthLabel" class="previewDimLabel">Width</span>
+          <input type="number" id="previewWidth" class="previewDimInput" min="0" step="0.001" inputmode="decimal" aria-label="Preview width in mm">
+          <span id="previewHeightLabel" class="previewDimLabel">Height</span>
+          <input type="number" id="previewHeight" class="previewDimInput" min="0" step="0.001" inputmode="decimal" aria-label="Preview height in mm">
+        </div>
+      </div>
       <div class="status" id="strategyText">Strategy: zig-zag raster with 50% stepover.</div>
       <h3>Operations</h3>
       <ol id="operationsList"></ol>
@@ -268,6 +271,11 @@ G90</textarea>
 
     function rowEndXForDirection(geo, direction) {
       return direction > 0 ? geo.maxX : geo.minX;
+    }
+
+    /** Return 1 or -1 to preserve the current direct-entry axis direction. */
+    function axisDirection(start, end) {
+      return end >= start ? 1 : -1;
     }
 
     function rampPlan(rowLength, requestedRamp) {
@@ -423,38 +431,107 @@ G90</textarea>
       }
     }
 
+    /** Update Mode 2 end coordinates from an overtyped preview width/height value. */
+    function applyPreviewDimension(axis) {
+      const fieldId = axis === 'width' ? 'previewWidth' : 'previewHeight';
+      const nextSize = parseFloat(el(fieldId).value);
+      if (!Number.isFinite(nextSize) || nextSize < 0) {
+        updatePreviewDimensionOverlay(calcGeometry(), null);
+        return;
+      }
+      const startId = axis === 'width' ? 'startX' : 'startY';
+      const endId = axis === 'width' ? 'endX' : 'endY';
+      const start = num(startId);
+      const end = num(endId);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        updatePreviewDimensionOverlay(calcGeometry(), null);
+        return;
+      }
+      el(endId).value = rounded(start + (axisDirection(start, end) * nextSize), 3);
+      refreshDerived();
+    }
+
+    /** Sync preview overlay visibility and values for direct-entry width/height editing. */
+    function updatePreviewDimensionOverlay(geo, previewBox) {
+      const overlay = el('previewOverlay');
+      const direct = currentMode() === 'direct';
+      overlay.classList.toggle('hidden', !direct || !geo || !previewBox);
+      overlay.setAttribute('aria-hidden', (!direct || !geo || !previewBox) ? 'true' : 'false');
+      if (!direct || !geo || !previewBox) return;
+      const svg = el('previewSvg');
+      const rawViewBox = svg.getAttribute('viewBox') || '0 0 640 320';
+      const viewBoxParts = rawViewBox.split(/\s+/).map(Number);
+      const viewBox = svg.viewBox && svg.viewBox.baseVal ? svg.viewBox.baseVal : { width: viewBoxParts[2] || 640, height: viewBoxParts[3] || 320 };
+      const svgRect = svg.getBoundingClientRect();
+      const overlayRect = overlay.getBoundingClientRect();
+      const renderWidth = svgRect.width || svg.clientWidth || viewBox.width;
+      const renderHeight = svgRect.height || svg.clientHeight || viewBox.height;
+      const scaleX = renderWidth / viewBox.width;
+      const scaleY = renderHeight / viewBox.height;
+      const boxX = (svgRect.left - overlayRect.left) + (previewBox.x * scaleX);
+      const boxY = (svgRect.top - overlayRect.top) + (previewBox.y * scaleY);
+      const boxW = previewBox.w * scaleX;
+      const boxH = previewBox.h * scaleY;
+      el('previewWidth').value = rounded(geo.w, 3);
+      el('previewHeight').value = rounded(geo.h, 3);
+      el('previewWidthLabel').style.left = `${boxX + (boxW / 2)}px`;
+      el('previewWidthLabel').style.top = `${boxY + boxH + 4}px`;
+      el('previewWidth').style.left = `${boxX + (boxW / 2)}px`;
+      el('previewWidth').style.top = `${boxY + boxH + 20}px`;
+      el('previewHeightLabel').style.left = `${boxX + boxW + 10}px`;
+      el('previewHeightLabel').style.top = `${boxY + (boxH / 2) - 36}px`;
+      el('previewHeight').style.left = `${boxX + boxW + 10}px`;
+      el('previewHeight').style.top = `${boxY + (boxH / 2) - 18}px`;
+    }
+
     function updatePreview() {
       const svg = el('previewSvg');
       const mode = currentMode();
       const cfg = sharedHeader();
+      const previewGeo = calcGeometry() || { minX: 0, maxX: 100, minY: 0, maxY: 60, w: 100, h: 60 };
       const stepMm = num('bitDiameter') * num('stepOverPercent') / 100;
-      let w = 100, h = 60;
-      if (mode === 'direct') {
-        const g = calcGeometry();
-        if (g) { w = Math.max(g.w, 1); h = Math.max(g.h, 1); }
-      }
+      const safeStepMm = Number.isFinite(stepMm) && stepMm > 0 ? stepMm : 1;
+      const w = Math.max(previewGeo.w, 1);
+      const h = Math.max(previewGeo.h, 1);
       const maxW = 520, maxH = 230;
       const scale = Math.min(maxW / w, maxH / h);
       const rw = w * scale, rh = h * scale;
       const x = 60, y = 40;
       let lines = '';
-      const s = Math.max(1, stepMm * scale);
+      const s = Math.max(1, safeStepMm * scale);
       let yy = y;
+      let rowIndex = 0;
+      const rowLength = Math.abs(previewGeo.maxX - previewGeo.minX);
       while (yy <= y + rh + 1e-9) {
-        lines += `<line x1="${x}" y1="${yy}" x2="${x + rw}" y2="${yy}" stroke="#38bdf8" stroke-width="1" />`;
+        const rowDir = rowDirectionForIndex(cfg, rowIndex);
+        const rampThisRow = cfg.rampEnabled && (cfg.cutPattern === 'oneway' || rowIndex === 0);
+        const arrow = rowDir > 0 ? '&gt;' : '&lt;';
+        const arrowX = rowDir > 0 ? x + (rw * 0.72) : x + (rw * 0.24);
+        lines += `<line x1="${x}" y1="${yy}" x2="${x + rw}" y2="${yy}" stroke="#38bdf8" stroke-width="1.4" />`;
+        if (rampThisRow) {
+          const plan = rampPlan(rowLength, cfg.rampDistance);
+          if (plan.usable) {
+            // Scale the ramp segment from machine mm into preview px so it stays aligned to the toolpath.
+            const rampPx = Math.min(rw, Math.max(plan.length * scale, 8));
+            const rampX = rowDir > 0 ? x : (x + rw - rampPx);
+            lines += `<line x1="${rampX}" y1="${yy}" x2="${rampX + rampPx}" y2="${yy}" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" />`;
+          }
+        }
+        lines += `<text x="${arrowX}" y="${yy - 4}" fill="#93c5fd" font-size="11">${arrow}</text>`;
         if (yy >= y + rh - 1e-9) break;
         yy = Math.min(yy + s, y + rh);
+        rowIndex++;
       }
       svg.innerHTML = `
-        <rect x="${x}" y="${y}" width="${rw}" height="${rh}" fill="#111827" stroke="#94a3b8" stroke-width="2" />
+        <rect x="${x}" y="${y}" width="${rw}" height="${rh}" fill="#111827" stroke="#94a3b8" stroke-width="2" ${mode === 'interactive' ? 'stroke-dasharray="6 4"' : ''} />
         ${lines}
-        <text x="${x}" y="${y - 10}" fill="#cbd5e1" font-size="12">Surfacing Area</text>
-        <text x="${x + rw + 6}" y="${y + rh/2}" fill="#cbd5e1" font-size="12">${rounded(h,1)}mm</text>
-        <text x="${x + rw/2 - 24}" y="${y + rh + 18}" fill="#cbd5e1" font-size="12">${rounded(w,1)}mm</text>
+        <text x="${x}" y="${y - 10}" fill="#cbd5e1" font-size="12">${mode === 'interactive' ? 'Runtime corner bounds' : 'Surfacing Area'}</text>
+        ${mode === 'interactive' ? `<circle cx="${x}" cy="${y}" r="4" fill="#38bdf8" /><text x="${x + 8}" y="${y - 8}" fill="#cbd5e1" font-size="12">A</text><circle cx="${x + rw}" cy="${y + rh}" r="4" fill="#38bdf8" /><text x="${x + rw + 8}" y="${y + rh - 8}" fill="#cbd5e1" font-size="12">B</text>` : ''}
       `;
+      updatePreviewDimensionOverlay(mode === 'direct' ? calcGeometry() : null, { x, y, w: rw, h: rh });
       const pattern = cfg.cutPattern === 'oneway' ? 'One-Way' : 'Zig-Zag';
       const direction = cfg.millingDirection === 'conventional' ? 'Conventional' : 'Climb';
-      el('strategyText').textContent = `Strategy: ${pattern} raster, ${direction} milling, ${rounded(stepMm, 2)}mm stepover${cfg.rampEnabled ? ', ramp enabled' : ''}.`;
+      el('strategyText').textContent = `Strategy: ${pattern} raster, ${direction} milling, ${rounded(safeStepMm, 2)}mm stepover${cfg.rampEnabled ? ', ramp enabled' : ''}.`;
     }
 
     function sharedHeader() {
@@ -842,6 +919,12 @@ G90</textarea>
       if (!node) return;
       node.addEventListener('input', refreshDerived);
       node.addEventListener('change', refreshDerived);
+    });
+    ['previewWidth', 'previewHeight'].forEach((id) => {
+      el(id).addEventListener('change', () => applyPreviewDimension(id === 'previewWidth' ? 'width' : 'height'));
+      el(id).addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') applyPreviewDimension(id === 'previewWidth' ? 'width' : 'height');
+      });
     });
     document.querySelectorAll('.presetFeed').forEach(b => b.addEventListener('click', () => { el('feedRate').value = b.dataset.feed; refreshDerived(); }));
     el('useProbe').addEventListener('change', updateProbeUi);
