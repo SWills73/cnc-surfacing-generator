@@ -87,11 +87,11 @@
           </div>
           <div>
             <label for="depthPerPass" title="Depth removed each pass">Depth/pass (mm)</label>
-            <input type="number" id="depthPerPass" min="0.1" max="5" step="0.1" value="1">
+            <input type="number" id="depthPerPass" min="0.05" max="5" step="0.05" value="0.25">
           </div>
           <div>
             <label for="totalDepth" title="Optional total depth. Used to calculate suggested passes">Total depth (mm, optional)</label>
-            <input type="number" id="totalDepth" min="0" step="0.1" value="">
+            <input type="number" id="totalDepth" min="0" step="0.01" value="0.50">
           </div>
           <div>
             <label for="passes">Number of passes</label>
@@ -116,6 +116,28 @@
           <div>
             <label for="wcs">Coordinate system number (1-20)</label>
             <input type="number" id="wcs" min="1" max="20" step="1" value="20">
+          </div>
+          <div>
+            <label for="cutPattern" title="Zig-Zag alternates travel direction; One-Way cuts every line in the same direction.">Cut pattern</label>
+            <select id="cutPattern">
+              <option value="zigzag" selected>Zig-Zag</option>
+              <option value="oneway">One-Way</option>
+            </select>
+          </div>
+          <div>
+            <label for="millingDirection" title="Climb: generally preferred for CNC routing where the machine is sufficiently rigid. Conventional: can sometimes be preferable on lighter machines or for particular materials.">Milling direction</label>
+            <select id="millingDirection">
+              <option value="climb" selected>Climb</option>
+              <option value="conventional">Conventional</option>
+            </select>
+          </div>
+          <div class="inline" style="padding-top:1.2rem;">
+            <input type="checkbox" id="rampEnabled" checked>
+            <label for="rampEnabled" title="Ramp into the first cutting depth instead of plunging straight down.">Ramp into cut</label>
+          </div>
+          <div>
+            <label for="rampDistance" title="Horizontal distance used to reach the first cutting depth.">Ramp distance (mm)</label>
+            <input type="number" id="rampDistance" min="0.1" step="0.1" value="25">
           </div>
         </div>
         <div class="status" id="sharedDerived">Step-over: 5.00mm</div>
@@ -230,6 +252,42 @@ G90</textarea>
 
     function rounded(v, d = 3) { return Number.parseFloat(v).toFixed(d); }
 
+    function millingBaseDirection(cfg) {
+      return cfg.millingDirection === 'conventional' ? -1 : 1;
+    }
+
+    function rowDirectionForIndex(cfg, rowIndex) {
+      const base = millingBaseDirection(cfg);
+      if (cfg.cutPattern === 'oneway') return base;
+      return rowIndex % 2 === 0 ? base : -base;
+    }
+
+    function rowStartXForDirection(geo, direction) {
+      return direction > 0 ? geo.minX : geo.maxX;
+    }
+
+    function rowEndXForDirection(geo, direction) {
+      return direction > 0 ? geo.maxX : geo.minX;
+    }
+
+    function rampPlan(rowLength, requestedRamp) {
+      const available = Math.max(0, rowLength);
+      const desired = Math.max(0, requestedRamp);
+      const length = Math.min(available, desired);
+      if (!(length > 0)) return { usable: false, length: 0, shortened: false };
+      return {
+        usable: true,
+        length,
+        shortened: length + 1e-9 < desired
+      };
+    }
+
+    function passDepthForPass(cfg, passNumber) {
+      const totalDepth = num('totalDepth');
+      const requested = cfg.dpp * passNumber;
+      return -Math.min(requested, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : requested);
+    }
+
     function updateModeUi() {
       const mode = currentMode();
       const interactive = mode === 'interactive';
@@ -285,6 +343,7 @@ G90</textarea>
       const spindle = num('spindleRpm');
       const clear = num('zClearance');
       const wcs = num('wcs');
+      const rampDistance = num('rampDistance');
       const probeOn = el('useProbe').checked;
 
       if (!(bit > 0)) errors.push('Bit diameter must be positive.');
@@ -295,6 +354,7 @@ G90</textarea>
       if (!(spindle > 0)) errors.push('Spindle speed must be positive.');
       if (!(clear > 0)) errors.push('Z clearance must be positive.');
       if (!(wcs >= 1 && wcs <= 20)) errors.push('Coordinate system number must be between 1 and 20.');
+      if (el('rampEnabled').checked && !(rampDistance > 0)) errors.push('Ramp distance must be positive when ramping is enabled.');
       if (probeOn) {
         if (!(num('probeClearance') > 0)) errors.push('Z probe clearance move must be positive.');
         if (!(num('probeSpeed') > 0)) errors.push('Z probe down speed must be positive.');
@@ -366,6 +426,7 @@ G90</textarea>
     function updatePreview() {
       const svg = el('previewSvg');
       const mode = currentMode();
+      const cfg = sharedHeader();
       const stepMm = num('bitDiameter') * num('stepOverPercent') / 100;
       let w = 100, h = 60;
       if (mode === 'direct') {
@@ -391,7 +452,9 @@ G90</textarea>
         <text x="${x + rw + 6}" y="${y + rh/2}" fill="#cbd5e1" font-size="12">${rounded(h,1)}mm</text>
         <text x="${x + rw/2 - 24}" y="${y + rh + 18}" fill="#cbd5e1" font-size="12">${rounded(w,1)}mm</text>
       `;
-      el('strategyText').textContent = `Strategy: zig-zag raster with ${rounded(stepMm, 2)}mm stepover.`;
+      const pattern = cfg.cutPattern === 'oneway' ? 'One-Way' : 'Zig-Zag';
+      const direction = cfg.millingDirection === 'conventional' ? 'Conventional' : 'Climb';
+      el('strategyText').textContent = `Strategy: ${pattern} raster, ${direction} milling, ${rounded(stepMm, 2)}mm stepover${cfg.rampEnabled ? ', ramp enabled' : ''}.`;
     }
 
     function sharedHeader() {
@@ -404,8 +467,13 @@ G90</textarea>
       const spindle = num('spindleRpm');
       const clear = num('zClearance');
       const wcs = parseInt(el('wcs').value || '20', 10);
+      const rampDistance = num('rampDistance');
       return {
         bit, stepPct, stepMm, dpp, passes, feed, spindle, clear, wcs,
+        cutPattern: el('cutPattern').value,
+        millingDirection: el('millingDirection').value,
+        rampEnabled: el('rampEnabled').checked,
+        rampDistance,
         pre: el('preCommands').value.trim(),
         post: el('postCommands').value.trim()
       };
@@ -443,25 +511,61 @@ G90</textarea>
 
     function buildSurfacingCoreForDirect(cfg, geo) {
       const lines = [];
-      const totalDepth = num('totalDepth');
-      lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
+      const rowLength = Math.abs(geo.maxX - geo.minX);
+      const baseDir = millingBaseDirection(cfg);
+      const firstRowStartX = rowStartXForDirection(geo, baseDir);
+      const plungeFeed = rounded(Math.max(cfg.feed / 4, 100), 0);
       for (let p = 1; p <= cfg.passes; p++) {
-        const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
+        const z = passDepthForPass(cfg, p);
         lines.push(`; Pass ${p}/${cfg.passes} - Z depth ${rounded(z,3)}mm`);
-        lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
+        lines.push(`G0 X${rounded(firstRowStartX,3)} Y${rounded(geo.minY,3)}`);
         let y = geo.minY;
-        let forward = true;
+        let rowIndex = 0;
         while (y <= geo.maxY + 1e-9) {
-          const tx = forward ? geo.maxX : geo.minX;
-          lines.push(`G1 X${rounded(tx,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+          const rowDir = rowDirectionForIndex(cfg, rowIndex);
+          const rowStartX = rowStartXForDirection(geo, rowDir);
+          const rowEndX = rowEndXForDirection(geo, rowDir);
+          // Ramp the first row of each pass; one-way ramps every row.
+          const rampThisRow = cfg.rampEnabled && (cfg.cutPattern === 'oneway' || rowIndex === 0);
+          if (rampThisRow) {
+            const plan = rampPlan(rowLength, cfg.rampDistance);
+            if (plan.usable) {
+              lines.push(rowIndex === 0 ? '; Ramp into first cutting depth' : '; Ramp into cut');
+              if (plan.shortened) {
+                lines.push(`; Effective ramp distance reduced to ${rounded(plan.length,2)}mm to stay within the surfacing width`);
+              }
+              const rampTargetX = rowStartX + (rowDir * plan.length);
+              lines.push(`G1 X${rounded(rampTargetX,3)} Y${rounded(y,3)} Z${rounded(z,3)} F${rounded(cfg.feed,0)}`);
+              if (Math.abs(rampTargetX - rowEndX) > 1e-9) {
+                lines.push(`G1 X${rounded(rowEndX,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+              }
+            } else {
+              lines.push('; Warning: ramp could not be created safely; using a vertical plunge instead.');
+              lines.push(`G1 Z${rounded(z,3)} F${plungeFeed}`);
+              lines.push(`G1 X${rounded(rowEndX,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+            }
+          } else if (cfg.cutPattern === 'oneway') {
+            lines.push(`G1 Z${rounded(z,3)} F${plungeFeed}`);
+            lines.push(`G1 X${rounded(rowEndX,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+          } else if (rowIndex === 0) {
+            lines.push(`G1 Z${rounded(z,3)} F${plungeFeed}`);
+            lines.push(`G1 X${rounded(rowEndX,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+          } else {
+            lines.push(`G1 X${rounded(rowEndX,3)} Y${rounded(y,3)} F${rounded(cfg.feed,0)}`);
+          }
           if (y >= geo.maxY - 1e-9) break;
           const nextY = Math.min(y + cfg.stepMm, geo.maxY);
-          lines.push(`G1 Y${rounded(nextY,3)} F${rounded(cfg.feed,0)}`);
+          if (cfg.cutPattern === 'oneway') {
+            lines.push(`G0 Z${rounded(cfg.clear,3)}`);
+            lines.push(`G0 X${rounded(firstRowStartX,3)} Y${rounded(nextY,3)}`);
+          } else {
+            lines.push(`G1 Y${rounded(nextY,3)} F${rounded(cfg.feed,0)}`);
+          }
           y = nextY;
-          forward = !forward;
+          rowIndex++;
         }
         lines.push(`G0 Z${rounded(cfg.clear,3)}`);
-        lines.push(`G0 X${rounded(geo.minX,3)} Y${rounded(geo.minY,3)}`);
+        lines.push(`G0 X${rounded(firstRowStartX,3)} Y${rounded(geo.minY,3)}`);
       }
       return lines;
     }
@@ -485,26 +589,92 @@ G90</textarea>
     }
 
     function buildInteractiveSurfacingCore(cfg) {
+      // Duet macro expressions inside `{...}` are evaluated at runtime.
       const lines = [];
-      lines.push('G0 X{var.minX} Y{var.minY}');
-      lines.push('var yPos = 0');
-      lines.push('var dir = 1');
-      lines.push('var nextY = 0');
-      lines.push('var done = 0');
-      const totalDepth = num('totalDepth');
+      const startOnMinX = millingBaseDirection(cfg) > 0 ? 1 : 0;
+      const plungeFeed = rounded(Math.max(cfg.feed / 4, 100), 0);
+      const rampLen = rounded(Math.max(0, cfg.rampDistance), 3);
+
+      lines.push(`set var.rowStartOnMinX = ${startOnMinX}`);
+      lines.push(`set var.rampEnabled = ${cfg.rampEnabled ? 1 : 0}`);
+      lines.push('set var.surfaceWidth = var.maxX - var.minX');
+      lines.push(`set var.rampLength = ${rampLen}`);
+      lines.push('if var.rampLength > var.surfaceWidth');
+      lines.push('  ; Effective ramp distance reduced to the surfacing width to stay within the surfacing area');
+      lines.push('  set var.rampLength = var.surfaceWidth');
+      lines.push('endif');
+      lines.push('if var.rampLength <= 0');
+      lines.push('  set var.rampEnabled = 0');
+      lines.push('endif');
+      lines.push('if var.rowStartOnMinX = 1');
+      lines.push('  G0 X{var.minX} Y{var.minY}');
+      lines.push('else');
+      lines.push('  G0 X{var.maxX} Y{var.minY}');
+      lines.push('endif');
+
       for (let p = 1; p <= cfg.passes; p++) {
-        const z = -Math.min(cfg.dpp * p, (Number.isFinite(totalDepth) && totalDepth > 0) ? totalDepth : cfg.dpp * p);
+        const z = passDepthForPass(cfg, p);
         lines.push(`; Pass ${p}/${cfg.passes} - Z depth ${rounded(z,3)}mm`);
-        lines.push(`G1 Z${rounded(z,3)} F${rounded(Math.max(cfg.feed/4, 100),0)}`);
         lines.push('set var.yPos = var.minY');
-        lines.push('set var.dir = 1');
+        lines.push('set var.rowIndex = 0');
         lines.push('set var.done = 0');
+        lines.push('set var.forward = var.rowStartOnMinX');
+        lines.push('if var.rowStartOnMinX = 1');
+        lines.push('  G0 X{var.minX} Y{var.minY}');
+        lines.push('else');
+        lines.push('  G0 X{var.maxX} Y{var.minY}');
+        lines.push('endif');
         lines.push('while var.done = 0');
-        lines.push('  if var.dir = 1');
-        lines.push(`    G1 X{var.maxX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('  if var.forward = 1');
+        lines.push('    set var.rowStartX = var.minX');
+        lines.push('    set var.rowEndX = var.maxX');
         lines.push('  else');
-        lines.push(`    G1 X{var.minX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+        lines.push('    set var.rowStartX = var.maxX');
+        lines.push('    set var.rowEndX = var.minX');
         lines.push('  endif');
+
+        if (cfg.cutPattern === 'oneway') {
+          lines.push('  if var.rampEnabled = 1');
+          lines.push('    ; Ramp into cut');
+          lines.push('    if var.forward = 1');
+          lines.push(`      G1 X{var.rowStartX + var.rampLength} Y{var.yPos} Z${rounded(z,3)} F${rounded(cfg.feed,0)}`);
+          lines.push('      if var.rowStartX + var.rampLength < var.rowEndX');
+          lines.push(`        G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('      endif');
+          lines.push('    else');
+          lines.push(`      G1 X{var.rowStartX - var.rampLength} Y{var.yPos} Z${rounded(z,3)} F${rounded(cfg.feed,0)}`);
+          lines.push('      if var.rowStartX - var.rampLength > var.rowEndX');
+          lines.push(`        G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('      endif');
+          lines.push('    endif');
+          lines.push('  else');
+          lines.push(`    G1 Z${rounded(z,3)} F${plungeFeed}`);
+          lines.push(`    G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('  endif');
+        } else {
+          lines.push('  if var.rowIndex = 0');
+          lines.push('    if var.rampEnabled = 1');
+          lines.push('      ; Ramp into first cutting depth');
+          lines.push('      if var.forward = 1');
+          lines.push(`        G1 X{var.rowStartX + var.rampLength} Y{var.yPos} Z${rounded(z,3)} F${rounded(cfg.feed,0)}`);
+          lines.push('        if var.rowStartX + var.rampLength < var.rowEndX');
+          lines.push(`          G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('        endif');
+          lines.push('      else');
+          lines.push(`        G1 X{var.rowStartX - var.rampLength} Y{var.yPos} Z${rounded(z,3)} F${rounded(cfg.feed,0)}`);
+          lines.push('        if var.rowStartX - var.rampLength > var.rowEndX');
+          lines.push(`          G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('        endif');
+          lines.push('      endif');
+          lines.push('    else');
+          lines.push(`      G1 Z${rounded(z,3)} F${plungeFeed}`);
+          lines.push(`      G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('    endif');
+          lines.push('  else');
+          lines.push(`    G1 X{var.rowEndX} Y{var.yPos} F${rounded(cfg.feed,0)}`);
+          lines.push('  endif');
+        }
+
         lines.push('  if var.yPos >= var.maxY');
         lines.push('    set var.done = 1');
         lines.push('  else');
@@ -512,17 +682,31 @@ G90</textarea>
         lines.push('    if var.nextY > var.maxY');
         lines.push('      set var.nextY = var.maxY');
         lines.push('    endif');
-        lines.push(`    G1 Y{var.nextY} F${rounded(cfg.feed,0)}`);
+        if (cfg.cutPattern === 'oneway') {
+          lines.push(`    G0 Z${rounded(cfg.clear,3)}`);
+          lines.push('    if var.rowStartOnMinX = 1');
+          lines.push('      G0 X{var.minX} Y{var.nextY}');
+          lines.push('    else');
+          lines.push('      G0 X{var.maxX} Y{var.nextY}');
+          lines.push('    endif');
+        } else {
+          lines.push(`    G1 Y{var.nextY} F${rounded(cfg.feed,0)}`);
+          lines.push('    if var.forward = 1');
+          lines.push('      set var.forward = 0');
+          lines.push('    else');
+          lines.push('      set var.forward = 1');
+          lines.push('    endif');
+        }
         lines.push('    set var.yPos = var.nextY');
-        lines.push('    if var.dir = 1');
-        lines.push('      set var.dir = 0');
-        lines.push('    else');
-        lines.push('      set var.dir = 1');
-        lines.push('    endif');
+        lines.push('    set var.rowIndex = var.rowIndex + 1');
         lines.push('  endif');
         lines.push('endwhile');
         lines.push(`G0 Z${rounded(cfg.clear,3)}`);
-        lines.push('G0 X{var.minX} Y{var.minY}');
+        lines.push('if var.rowStartOnMinX = 1');
+        lines.push('  G0 X{var.minX} Y{var.minY}');
+        lines.push('else');
+        lines.push('  G0 X{var.maxX} Y{var.minY}');
+        lines.push('endif');
       }
       return lines;
     }
@@ -550,7 +734,8 @@ G90</textarea>
       else ops.push('Direct numeric work area');
       if (el('useProbe').checked) ops.push('Probing (RemoteBee)');
       else ops.push('Probing skipped (Z0 assumed set)');
-      ops.push('Surfacing passes (zig-zag raster)');
+      const cfg = sharedHeader();
+      ops.push(`Surfacing passes (${cfg.cutPattern === 'oneway' ? 'one-way' : 'zig-zag'} raster)`);
       ops.push('Post-processing');
       el('operationsList').innerHTML = ops.map(v => `<li>${v}</li>`).join('');
     }
@@ -575,7 +760,11 @@ G90</textarea>
       lines.push(`; Probe enabled: ${el('useProbe').checked ? 'Yes' : 'No'}`);
       lines.push(`; Bit: ${rounded(cfg.bit,2)}mm | Stepover: ${rounded(cfg.stepPct,2)}% (${rounded(cfg.stepMm,2)}mm)`);
       lines.push(`; Depth/pass: ${rounded(cfg.dpp,2)}mm | Passes: ${cfg.passes}`);
-      lines.push(`; Feed: ${rounded(cfg.feed,0)}mm/min | Spindle: ${rounded(cfg.spindle,0)}RPM`);
+      lines.push(`; Feed: ${rounded(cfg.feed,0)}mm/min | Plunge feed: ${rounded(Math.max(cfg.feed / 4, 100),0)}mm/min | Spindle: ${rounded(cfg.spindle,0)}RPM`);
+      lines.push(`; Cut pattern: ${cfg.cutPattern === 'oneway' ? 'One-Way' : 'Zig-Zag'}`);
+      lines.push(`; Milling direction: ${cfg.millingDirection === 'conventional' ? 'Conventional' : 'Climb'}`);
+      lines.push(`; Ramp: ${cfg.rampEnabled ? 'Yes' : 'No'}`);
+      if (cfg.rampEnabled) lines.push(`; Ramp distance: ${rounded(cfg.rampDistance,2)}mm`);
       lines.push(`; Coordinate system number: ${cfg.wcs}`);
       if (mode === 'direct' && geo) lines.push(`; Area: ${rounded(geo.w,2)} x ${rounded(geo.h,2)} mm`);
       lines.push('');
@@ -648,7 +837,7 @@ G90</textarea>
     }
 
     modeInputs.forEach(i => i.addEventListener('change', updateModeUi));
-    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','probeClearance','probeSpeed','includeReturn','startX','startY','endX','endY'].forEach(id => {
+    ['useProbe','autoPasses','bitDiameter','stepOverPercent','depthPerPass','totalDepth','passes','feedRate','spindleRpm','zClearance','wcs','cutPattern','millingDirection','rampEnabled','rampDistance','probeClearance','probeSpeed','includeReturn','startX','startY','endX','endY'].forEach(id => {
       const node = el(id);
       if (!node) return;
       node.addEventListener('input', refreshDerived);
