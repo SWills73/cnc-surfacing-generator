@@ -417,7 +417,7 @@ G90</textarea>
       const clear = num('probeClearance');
       const speed = num('probeSpeed');
       const lines = [
-        '; Probe surface and establish Z0 (RemoteBee compatible)',
+        '; Probe surface and establish Z0',
         `G38.2 Z-20 F${rounded(speed, 0)}              ; probe down to touch surface`,
         'G10 L20 Z0.00                ; set probed surface as Z0',
         'G21                         ; ensure mm units',
@@ -549,7 +549,7 @@ G90</textarea>
       ops.push('Pre-processing');
       if (mode === 'interactive') ops.push('Capture corners via M291 prompts');
       else ops.push('Direct numeric work area');
-      if (el('useProbe').checked) ops.push('Probing (RemoteBee)');
+      if (el('useProbe').checked) ops.push('Probing');
       else ops.push('Probing skipped (Z0 assumed set)');
       ops.push('Surfacing passes (zig-zag raster)');
       ops.push('Post-processing');
